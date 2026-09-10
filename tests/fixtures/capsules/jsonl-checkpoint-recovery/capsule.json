@@ -1,0 +1,38 @@
+{
+  "schema_version": "0.1",
+  "id": "repository.jsonl-checkpoint-recovery",
+  "title": "JSONL checkpoint test fixture",
+  "domain": "repository",
+  "task_type": "bug_fix",
+  "difficulty": "medium",
+  "prompt": "goal.txt",
+  "workspace": "workspace",
+  "policy": {
+    "network": "deny",
+    "workspace_access": "read_write",
+    "allowed_write_roots": [
+      "workspace"
+    ],
+    "stdlib_only": true
+  },
+  "budget": {
+    "wall_time_seconds": 240,
+    "max_processes": 8,
+    "max_output_bytes": 200000
+  },
+  "verifier": {
+    "command": [
+      "python3",
+      "verifier/verify.py"
+    ],
+    "success_exit_code": 0,
+    "network_required": false
+  },
+  "required_artifacts": [
+    "workspace/eventspool/follower.py"
+  ],
+  "tags": [
+    "python",
+    "test-fixture"
+  ]
+}

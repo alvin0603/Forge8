@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "qwen35-9b-q4-k-m",
+  "publisher": "Unsloth (quantization); Qwen (base model)",
+  "repository": "unsloth/Qwen3.5-9B-GGUF",
+  "revision": "3885219b6810b007914f3a7950a8d1b469d598a5",
+  "license": "Apache-2.0",
+  "source_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF",
+  "provenance_limit": "Quantizer names Qwen/Qwen3.5-9B but does not pin its base revision; no independently reproduced conversion claim.",
+  "files": [{
+    "role": "target",
+    "filename": "Qwen3.5-9B-Q4_K_M.gguf",
+    "size_bytes": 5680522464,
+    "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+    "download_url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
+  }]
+}

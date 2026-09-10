@@ -1,0 +1,8 @@
+2026-08-29T03:14:22.803Z INFO  streamgate.bootstrap loading base=config/base.ini overlay=config/production.ini
+2026-08-29T03:14:22.804Z INFO  streamgate.bootstrap environment=production workers=6 token_source=environment
+2026-08-29T03:14:22.804Z ERROR streamgate.bootstrap configuration preflight rejected deployment
+2026-08-29T03:14:22.804Z ERROR streamgate.config runtime.shutdown_grace_seconds must be greater than delivery.request_timeout_seconds
+2026-08-29T03:14:22.804Z ERROR streamgate.config delivery.max_inflight=512 exceeds worker capacity 384
+2026-08-29T03:14:22.804Z ERROR streamgate.config security.verify_tls must be enabled in production
+2026-08-29T03:14:22.804Z ERROR streamgate.config storage.spool_dir must be absolute in production
+2026-08-29T03:14:22.805Z INFO  streamgate.bootstrap shutdown before opening collector connection

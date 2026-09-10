@@ -1,0 +1,1 @@
+Preserve complete JSONL records and defer incomplete records without losing checkpointed data.

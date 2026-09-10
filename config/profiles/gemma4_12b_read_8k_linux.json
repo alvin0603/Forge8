@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "gemma4-12b-read-8k-linux",
+  "runtime_manifest": "config/runtimes/llama_cpp_b10621_linux_cuda.json",
+  "model_manifest": "config/models/gemma4_12b_qat_q4.json",
+  "executable": "runtime/llama-b10621-linux-cuda12.8/llama-server",
+  "model": "models/gemma-4-12b-it-qat-q4_0.gguf",
+  "host": "127.0.0.1",
+  "port": 18080,
+  "context_tokens": 8192,
+  "parallel": 1,
+  "batch_size": 512,
+  "ubatch_size": 256,
+  "kv_cache": "q8_0",
+  "flash_attention": "on",
+  "reasoning": "on",
+  "reasoning_budget": 2048,
+  "reasoning_format": "auto",
+  "flags": [
+    "--no-mmproj",
+    "--offline",
+    "--jinja",
+    "--metrics",
+    "--slots"
+  ],
+  "experimental": false
+}

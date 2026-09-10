@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Fixture verifiers intentionally pin the original bytes on both platforms.
+tests/fixtures/** -text
+*.png -text

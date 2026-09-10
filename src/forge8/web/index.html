@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forge8 · 本機程式碼閱讀桌</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/reading-note.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">F8</span><div><strong>Forge8</strong><span class="subtitle">本機程式碼閱讀桌</span></div></div>
+    <div class="project-heading"><span id="project-name">正在開啟專案…</span><span id="project-version" class="muted"></span></div>
+    <span id="reader-badge" class="badge">本機模型 · 試用</span><button id="change-mode" type="button" class="quiet" aria-pressed="false" disabled>理解這次修改</button><button id="refresh" class="quiet" disabled>重新讀取專案</button>
+  </header>
+  <div id="reading-notice" class="notice reading-guide"><strong>① 開啟檔案 → ② 選行並加入選段 → ③ 提問</strong><span>原碼留在本機；瀏覽與解讀不執行、不修改原碼。</span></div>
+  <div id="browse-only-notice" class="notice" hidden><strong>純原碼閱讀 · 不需要模型資產</strong><p>開啟檔案 → 選行並加入選段 → 查看名稱來源。也可搜尋或對應 traceback；仍會建立本機原碼快照。</p><details class="reading-disclosure"><summary>本次未啟用 AI；如何切換？</summary><p>本次不提供 AI 問答、函式試跑或 HEAD／目前版本比較。要使用 AI，先完成一般模式設定並準備、核對模型與執行環境，再於原終端機按 Ctrl+C 結束本次服務，移除 --browse-only 與 --state 及其路徑後重新啟動一般 read；此頁不下載資產，也不會自行切換模式。</p></details></div>
+  <div id="experiment-enabled" class="notice experiment-enabled" hidden>本次已明確開放函式試跑。仍須逐次確認，才會在獨立 WASI 環境執行完整模組；不會自動執行 AI 產生的程式碼。</div>
+  <div id="error" class="error-banner" role="alert" hidden></div>
+  <main class="desk">
+    <aside class="panel explorer" aria-label="專案檔案與搜尋">
+      <div class="panel-heading"><h1>探索原碼</h1><span id="file-count" class="muted"></span></div>
+      <section id="changes-panel" class="changes-panel" aria-labelledby="changes-title" hidden>
+        <h2 id="changes-title">HEAD → 目前已儲存的檔案</h2>
+        <p id="changes-summary" class="muted"></p>
+        <p class="muted">不是暫存區比較，也不包含編輯器未儲存的修改。先查看兩側，再選一段目前版本的呼叫端；只瀏覽不啟動模型。</p>
+        <p id="changes-feedback" class="muted" role="status"></p>
+        <div id="changes-list" class="changes-list"></div>
+      </section>
+      <label for="file-filter">篩選檔案</label><input id="file-filter" type="search" placeholder="輸入檔名或路徑…" autocomplete="off">
+      <form id="search-form" class="search-form">
+        <div class="search-options"><label for="search-mode">搜尋方式</label><select id="search-mode"><option value="text">文字出現位置</option><option value="definitions">同名定義</option><option value="keywords">關鍵字找定義</option><option value="calls">同名呼叫位置</option></select></div>
+        <label id="search-query-label" for="search-query">在原碼中搜尋文字</label>
+        <div class="input-row"><input id="search-query" type="search" maxlength="128" placeholder="例如 getint 或 release" autocomplete="off"><button id="search-button" type="submit" class="quiet">搜尋</button></div>
+        <p id="search-keyword-hint" class="muted" hidden>所有詞都需在同一函式的名稱、路徑或自身原碼命中。忽略大小寫，支援 camelCase／底線分詞；不翻譯或補同義詞，不是語意搜尋，也不使用模型。</p>
+        <p id="search-call-hint" class="muted" hidden>專案內相同拼寫，非已解析的呼叫關係；不追別名、接收物件或動態綁定。只導航、不加選段、不執行。引數帶入仍拒絕同一行多次、巢狀、屬性或非字面值呼叫。</p>
+      </form>
+      <div id="search-summary" class="muted search-summary" role="status"></div>
+      <div id="search-results" class="search-results"></div>
+      <nav id="files" class="file-list" aria-label="檔案清單"></nav>
+      <details id="exclusions" class="exclusions"><summary id="excluded-summary">排除項目</summary><ul id="excluded-list"></ul></details>
+    </aside>
+    <section class="panel source-panel" aria-labelledby="source-title">
+      <div class="panel-heading source-heading"><button id="source-back" type="button" class="quiet" title="尚無可返回的閱讀位置" disabled>← 返回</button><h2 id="source-title">選一個檔案，開始閱讀</h2><span id="source-version" class="muted"></span></div>
+      <details id="outline" class="definition-outline" hidden>
+        <summary id="outline-summary">此檔案的定義</summary>
+        <label id="outline-filter-label" for="outline-filter">篩選定義名稱</label><input id="outline-filter" type="search" placeholder="例如 Context.invoke" autocomplete="off">
+        <p id="outline-note" class="muted"></p><div id="outline-list" class="definition-list"></div>
+      </details>
+      <section id="experiment-panel" class="experiment-panel" aria-labelledby="experiment-title" hidden>
+        <div class="experiment-heading"><h3 id="experiment-title">試一組輸入</h3><button id="experiment-close" type="button" class="quiet">關閉</button></div>
+        <p id="experiment-target" class="experiment-target"></p>
+        <p id="experiment-notice" class="experiment-notice">執行快照的完整模組（含初始化），再呼叫函式；不是只跑選取行。獨立 CPython/WASI，不掛載專案。</p>
+        <p id="experiment-modules-bound" class="experiment-target" hidden></p>
+        <details class="experiment-provenance"><summary>來源快照與執行限制</summary><p id="experiment-identity" class="experiment-identity"></p><p>不使用 GPU，沒有專案或原生套件。回傳值／例外只描述這組輸入，不代表 AI 解釋正確。</p></details>
+        <details id="experiment-modules"><summary>同專案模組（選用）</summary>
+          <p>需要同專案匯入時，勾選額外的完整 .py 檔案，包含必要的 __init__.py。入口檔案已包含；合計最多 4 檔／64 KiB。匯入根就是這次閱讀的來源根；不自動尋找或安裝相依套件。</p>
+          <label for="experiment-module-filter">篩選檔案路徑</label><input id="experiment-module-filter" type="search" autocomplete="off" placeholder="例如 exporter/">
+          <div id="experiment-module-options" class="experiment-module-options"></div>
+          <p id="experiment-module-note" class="muted" role="status"></p>
+          <button id="experiment-module-prepare" type="button" class="quiet">核對這組模組（不執行）</button>
+        </details>
+        <details id="experiment-call-input"><summary>從原碼呼叫帶入引數（選用）</summary>
+          <p id="experiment-call-selection" class="muted"></p>
+          <button id="experiment-from-call" type="button" class="quiet" disabled>帶入選取呼叫的引數（不執行）</button>
+          <p id="experiment-call-note" class="muted" role="status"></p>
+        </details>
+        <div class="experiment-io"><div class="experiment-input-side">
+        <label for="experiment-input">一組 JSON 輸入（args 與 kwargs）</label>
+        <textarea id="experiment-input" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="experiment-input-note">{"args":[],"kwargs":{}}</textarea>
+        <p id="experiment-input-note" class="muted">原文送出，保留大型整數；最多 16 KiB，不自動修正或裁切 JSON。</p>
+        <label id="experiment-trace-option" class="experiment-trace-option" hidden><input id="experiment-trace-lines" type="checkbox" aria-describedby="experiment-trace-option-note">記錄本次呼叫的原碼行（選用）</label>
+        <p id="experiment-trace-option-note" class="muted" hidden>僅單檔；最多 1,000 次行事件，可能增加執行時間。勾選不執行，按下方執行才生效。</p>
+        <div class="experiment-actions"><button id="experiment-run" type="button" disabled>執行完整模組，再呼叫函式</button><button id="experiment-cancel" type="button" class="quiet" hidden>取消這次試跑</button><button id="experiment-recheck" type="button" class="quiet" hidden>重新確認狀態（不執行）</button></div>
+        </div><div id="experiment-output-side" class="experiment-output-side">
+        <section id="experiment-baseline-controls" hidden aria-label="固定一筆試跑回報">
+          <div class="experiment-actions"><button id="experiment-baseline-pin" type="button" class="quiet" disabled>固定這次回報為 A（不執行）</button><button id="experiment-baseline-clear" type="button" class="quiet" hidden disabled>清除 A（不執行）</button></div>
+          <p id="experiment-baseline-summary" class="muted" role="status"></p>
+          <details><summary>兩次回報比較的範圍</summary><p class="muted">只比較手動執行的兩次 guest 回報（canonical-json-v1），不是測試通過，也不驗證 AI 解釋。相同不代表函式等價；不同不證明只由輸入造成。A 保留在本次閱讀桌，只有明確取代、清除或成功重新讀取專案才移除；重載頁面只查詢，不重跑。原始輸入與回報可能含私人資料。</p></details>
+        </section>
+        <div id="experiment-baseline-grid" class="experiment-baseline-grid">
+        <section id="experiment-baseline-a" hidden aria-label="固定的 A 原始輸入與回報">
+          <h4>A · 上次確認的固定回報，未驗證</h4>
+          <details><summary>A 的來源與回報身分</summary><p id="experiment-baseline-a-identity" class="experiment-identity"></p></details>
+          <h4>A 已送出的輸入 · 唯讀</h4><pre id="experiment-baseline-a-input" tabindex="0"></pre>
+          <h4>A 的回傳值或例外 · 未驗證</h4><pre id="experiment-baseline-a-result" tabindex="0"></pre>
+        </section>
+        <div id="experiment-baseline-b"><h4 id="experiment-baseline-b-title" hidden>B · 最近一次手動試跑</h4>
+        <details id="experiment-baseline-b-input" hidden><summary>B 已送出的輸入（唯讀）</summary><p class="muted">這是本次送出的原文；編輯下一次輸入不會改寫 A 或 B。</p><pre id="experiment-baseline-b-input-text" tabindex="0"></pre></details>
+        <p id="experiment-status" class="experiment-status" role="status" aria-live="polite"></p>
+        <p id="experiment-input-state" class="experiment-input-state" role="status" hidden>輸入已修改；目前回報仍屬上次輸入。按執行才會產生新的回報。</p>
+        <section id="experiment-result" hidden aria-label="試跑回傳值或例外"><h4>程式回報的結果 · 未驗證</h4><pre id="experiment-result-text" tabindex="0"></pre></section>
+        <section id="experiment-trace" hidden aria-labelledby="experiment-trace-title">
+          <h4 id="experiment-trace-title">本次呼叫的行位置 · guest 回報，未驗證</h4>
+          <p id="experiment-trace-summary" class="muted"></p>
+          <details id="experiment-trace-input" hidden><summary>本次已送出的輸入（唯讀）</summary><p class="muted">此紀錄屬於上次明確送出的試跑；修改草稿或勾選設定不會改寫它。</p><pre id="experiment-trace-input-text" tabindex="0" aria-label="行位置紀錄的原始 JSON 輸入"></pre></details>
+          <div id="experiment-trace-controls" class="experiment-trace-controls" hidden>
+            <label for="experiment-trace-step">第幾次行事件</label><input id="experiment-trace-step" type="number" min="1" max="1000" step="1" inputmode="numeric" aria-describedby="experiment-trace-position">
+            <button id="experiment-trace-prev" type="button" class="quiet">← 上一次</button><button id="experiment-trace-next" type="button" class="quiet">下一次 →</button><button id="experiment-trace-view" type="button" class="quiet">查看這一步原碼</button>
+          </div>
+          <p id="experiment-trace-position" class="muted"></p><p id="experiment-trace-note" class="muted" role="status"></p>
+          <pre id="experiment-trace-source" tabindex="0" aria-label="本次行事件的保留原碼片段" hidden></pre>
+          <details><summary>紀錄範圍與限制</summary><p class="muted">行事件在該行執行前回報，不代表該行成功完成。只記錄本檔原始程式在呼叫階段的行位置（含同檔輔助函式），不含初始化、結果序列化、匯入／動態產生的程式碼或變數值。截斷、掛鉤中斷或零事件都不是完整路徑；掛鉤結束時仍在也不保證全程記錄。guest 可以干擾回報，這不驗證 AI 解釋；查看原碼不加入模型選段，也不執行程式。</p></details>
+        </section>
+        <section id="experiment-pair-result" hidden aria-label="HEAD 與目前版本的配對回報">
+          <h4 id="experiment-pair-summary"></h4>
+          <details id="experiment-submitted-input" hidden><summary>本次已送出的輸入（唯讀）</summary><p class="muted">建立本次試跑時送出的原文；修改上方草稿不會改變此紀錄。展開不會執行程式碼。</p><pre id="experiment-submitted-input-text" tabindex="0" aria-label="本次已送出的 JSON 輸入"></pre></details>
+          <p class="muted">只比較這組輸入的 guest 回報（canonical-json-v1），不是測試通過或可信 oracle。相同不代表程式等價；不同不證明由修改造成，也不驗證 AI 的解釋。</p>
+          <div class="experiment-pair-results">
+            <section><h4>HEAD · 程式回報，未驗證</h4><p id="experiment-before-status" class="muted"></p><pre id="experiment-before-result" tabindex="0" hidden></pre><p id="experiment-before-report" class="experiment-identity"></p>
+              <details id="experiment-before-logs" hidden><summary>HEAD 程式輸出（未驗證）</summary><div id="experiment-before-stdout-wrap" hidden><h4>stdout</h4><pre id="experiment-before-stdout" tabindex="0"></pre></div><div id="experiment-before-stderr-wrap" hidden><h4>stderr</h4><pre id="experiment-before-stderr" tabindex="0"></pre></div></details>
+            </section>
+            <section><h4>目前已儲存 · 程式回報，未驗證</h4><p id="experiment-after-status" class="muted"></p><pre id="experiment-after-result" tabindex="0" hidden></pre><p id="experiment-after-report" class="experiment-identity"></p>
+              <details id="experiment-after-logs" hidden><summary>目前版本程式輸出（未驗證）</summary><div id="experiment-after-stdout-wrap" hidden><h4>stdout</h4><pre id="experiment-after-stdout" tabindex="0"></pre></div><div id="experiment-after-stderr-wrap" hidden><h4>stderr</h4><pre id="experiment-after-stderr" tabindex="0"></pre></div></details>
+            </section>
+          </div>
+        </section>
+        <details id="experiment-logs" hidden><summary>程式輸出（未驗證）</summary><div id="experiment-stdout-wrap" hidden><h4>stdout</h4><pre id="experiment-stdout" tabindex="0"></pre></div><div id="experiment-stderr-wrap" hidden><h4>stderr</h4><pre id="experiment-stderr" tabindex="0"></pre></div></details>
+        </div></div></div></div>
+      </section>
+      <div class="source-tools"><span id="selection-hint">點行號選起點；Shift＋點擊或按「延伸選取」選終點</span><button id="find-selection" type="button" class="quiet" disabled>找選取名稱</button><button id="expand-definition" type="button" class="quiet" aria-describedby="definition-target" disabled>擴展到完整定義</button><div><button id="extend-selection" type="button" class="quiet" aria-pressed="false" disabled>延伸選取</button><button id="page-prev" class="quiet" disabled aria-label="上一頁原碼">←</button><span id="page-info" class="muted"></span><button id="page-next" class="quiet" disabled aria-label="下一頁原碼">→</button></div></div>
+      <p id="definition-target" class="definition-target muted" role="status">先選取原碼行；可擴展到包含整段的完整定義。</p>
+      <div id="code" class="code-view" aria-label="原始碼"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">{ }</span><h3>從你想看懂的地方開始</h3><p>開啟檔案，或搜尋一個函式名稱。<br>選取真正相關的原碼，再向本機模型提問。</p></div></div>
+      <div class="selection-bar"><span id="range-label" class="muted">尚未選取行</span><div id="change-slot-control" class="change-slot-control" hidden><label for="change-slot">這次加入／取代哪一段？</label><select id="change-slot"><option value="before">① HEAD 原碼</option><option value="after">② 目前對應原碼</option><option value="caller">③ 目前呼叫端（固定）</option></select></div><button id="add-selection" disabled>加入選段</button></div>
+    </section>
+    <section class="panel reader-panel" aria-labelledby="reader-title">
+      <div class="panel-heading"><h2 id="reader-title">探索與理解程式碼</h2><span id="selection-count" class="muted">0 / 3 段</span></div>
+      <details id="observation" class="observation" hidden>
+        <summary>實際測試路徑 · 唯讀紀錄</summary>
+        <p id="observation-status" role="status"></p>
+        <div id="observation-body">
+          <p class="muted">只記錄選定檔案的同步執行位置，行號表示即將執行，不記錄變數值。來源雜湊相符不代表紀錄可信或解釋正確。</p>
+          <label for="observed-call">選擇一次呼叫</label><select id="observed-call"></select>
+          <p id="observed-location" class="muted"></p><div id="observed-parent"></div><p id="observed-result" class="muted"></p>
+          <div id="observed-visits" class="observed-visits" aria-label="依時間排序的行號；保留重複位置"></div>
+          <label for="observed-compare">比較同一函式的另一次呼叫</label><select id="observed-compare"></select>
+          <div id="observed-difference" class="observed-difference" aria-live="polite"></div>
+          <p class="muted">父呼叫只涵蓋選定檔案，省略外部框架。未觀察測試載入／建構階段、其他執行緒／程序或 C 函式內部。此紀錄不會自動送給模型；解讀只使用手動選段，或你明確要求模型尋找的原碼。</p>
+        </div>
+      </details>
+      <details id="question-editor" class="question-editor" open><summary id="question-editor-summary">調整選段與問題</summary>
+      <section id="continuation-panel" class="continuation-panel" hidden aria-label="本次提問沿用的原碼">
+        <h3>沿用前題原碼 · 不重新定位</h3>
+        <p id="continuation-parent"></p>
+        <div id="continuation-ranges"></div>
+        <p class="muted">下方手動選段仍保留，但不會送出。請寫完整的新問題；不帶入舊問答，也不會自動擴充原碼。</p>
+        <button id="continuation-clear" type="button" class="quiet">回到手動選段</button>
+      </section>
+      <p id="continuation-note" class="muted" role="status" hidden></p>
+      <div id="selections" class="selections"><p class="muted">先在原碼中選行，再加入選段。</p></div>
+      <section id="source-context" class="source-context" hidden aria-label="名稱來源與匯入導航">
+        <h3>查看名稱來源</h3>
+        <p id="context-status" class="muted" role="status"></p>
+        <p class="muted">依讀取作用域列出同檔來源；不代表執行時的值、實際生效的宣告或完整依賴。</p>
+        <details class="context-limits"><summary>這能找到什麼？</summary>
+          <p class="muted">區分參數、區域、外層、模組與類別本體中的名稱查找。區域名稱可能遮蔽同名宣告；先讀後賦值、條件宣告、刪除名稱及註記求值仍可能使執行時沒有值。無法判定的名稱會明確保留，不改用其他作用域的同名宣告。匯入宣告旁可明確追蹤快照內的來源：支援專案根目錄與 src 佈局、相對匯入及明確再匯出。這是原碼路徑候選，不解析物件屬性、動態匯入或執行時搜尋順序；不會載入專案套件或自動加入模型上下文。跨檔案查看保留原有選段與問題。</p>
+        </details>
+        <div id="context-results"></div>
+      </section>
+      <div id="change-selection-guide" class="change-selection-guide" hidden><p id="change-selection-status" role="status"></p><p class="muted">前兩段必須來自同一路徑的 HEAD／目前版本，可手動擴展以包含常數或設定。第三段固定使用目前版本：不會自動證明呼叫關係，也不代表呼叫端過去未修改。</p><p class="muted">恰好三段，各限 80 行／4,000 字元；合計最多 240 行，引用資料 JSON 限 9,000 字元。載入模型前檢查，放不下就停下，不裁切或自動重試。</p><button id="clear-change-selections" type="button" class="quiet">清除全部三段，重新選取</button></div>
+      <details id="selection-budget" class="reading-disclosure selection-budget"><summary>最多 3 段、每段 80 行 · 預算限制</summary><p id="selection-limits" class="limit-note">手動最多 3 段，自動選材最多 6 段；每段仍限 80 行，實際讀取合計最多 240 行，兩者字元預算相同。手動選段在載入模型前檢查；自動找原碼會在定位後、回答請求前檢查，放不下就停下，不裁掉候選。</p></details>
+      <form id="question-form">
+        <label id="question-label" for="question">你想釐清什麼？</label>
+        <textarea id="question" rows="4" maxlength="2000" placeholder="例如：這個函式回傳什麼？參數省略或輸入無效時，又會發生什麼？" required></textarea>
+        <div class="question-actions"><span id="question-count" class="muted">0 / 2000</span><button id="ask" type="submit" disabled>解釋選取的程式碼 <span aria-hidden="true">↗</span></button></div>
+        <details id="traceback-tools" class="reading-disclosure"><summary>貼上了 traceback？定位原碼</summary>
+          <button id="traceback-locate" type="button" class="quiet traceback-button" disabled>從貼上的 traceback 找原碼（不啟動模型）</button>
+          <p id="traceback-summary" class="muted" role="status"></p><div id="traceback-results" class="traceback-results"></div>
+        </details>
+        <details id="ai-discovery-actions" class="reading-disclosure"><summary>不知道從哪讀？AI 找原碼（較慢）</summary>
+        <button id="ask-project" type="button" class="locate-button" disabled>從專案找程式並回答</button>
+        <p id="ask-project-note" class="muted">不知道檔案也能提問：先定位，再完整讀取候選並回答。最多 3 次模型請求、分兩次載入與釋放；可能需要數分鐘。結果會揭露模型選材，不修改你的手動選段，仍可能漏掉相關實作。</p>
+        <button id="locate" type="button" class="quiet locate-button" disabled>不知道從哪讀？AI 幫我找程式</button>
+        <p id="locate-note" class="muted">定位會載入本機模型。較大目錄分兩次：先選最多 3 個檔案，再找其中的實作。先檢查候選，再選段解釋；不會自動加入選段或產生答案。</p>
+        </details>
+      </form>
+      </details>
+      <div id="ai-reading-results">
+      <section class="job-status" aria-label="目前問題狀態"><div><span id="status-dot" class="status-dot"></span><strong id="status-label">尚未提問</strong><span id="elapsed" class="muted"></span></div><p id="phase" role="status" aria-live="polite">選好原碼後即可提問；瀏覽不啟動模型。</p><button id="cancel" class="quiet" hidden>取消本題</button></section>
+      <section id="model-status" class="model-status" aria-label="常駐模型狀態" hidden>
+        <div class="model-heading"><strong id="model-label" role="status" aria-live="polite">模型狀態尚未確認</strong><span id="model-reader" class="muted"></span></div>
+        <p id="model-note" class="muted"></p>
+        <p id="model-receipt-warning" class="model-receipt-warning" role="status" hidden></p>
+        <details id="model-receipts" hidden><summary>最近工作階段的結束紀錄（最多 5 次）</summary><div id="model-receipts-list"></div></details>
+        <div class="model-actions"><span id="model-countdown" class="muted" aria-live="off"></span><button id="model-release" type="button" class="quiet" disabled>釋放模型</button><button id="model-recheck" type="button" class="quiet" hidden>重新確認模型狀態（不載入）</button></div>
+      </section>
+      <section id="answer" class="answer" aria-label="模型解讀" aria-live="polite"><p class="muted">答案會顯示在這裡。點擊引用，可回到這一題實際讀到的原碼。</p></section>
+      <p class="trust-note">模型解讀可能有錯；引用只確認出處與行號，不代表推論正確。</p>
+      <details id="reading-tools" class="reading-history reading-disclosure" aria-label="本次閱讀紀錄與原碼工具"><summary id="reading-tools-summary">閱讀紀錄、沿用原碼與匯出</summary>
+        <label for="history-select">查看目前工作或先前問題</label>
+        <select id="history-select" aria-describedby="history-note"><option value="">目前工作</option></select>
+        <p id="history-note" class="muted" role="status">只在本次閱讀桌暫存；回看不啟動模型，也不會自動加入下一題。</p>
+        <button id="history-retry" type="button" class="quiet" hidden>重讀紀錄（不啟動模型）</button>
+        <button id="continue-source" type="button" class="quiet" disabled>沿用畫面中這題的原碼提問（不啟動模型）</button>
+        <button id="replace-source" type="button" class="quiet" disabled hidden>以本題原碼取代全部手動選段（不提問）</button>
+        <p id="replace-source-note" class="muted" role="status" hidden></p>
+        <button id="export-reading-note" type="button" class="quiet" disabled aria-describedby="reading-note-privacy reading-note-status">匯出畫面中這題的閱讀筆記（含原碼）</button>
+        <p id="reading-note-privacy" class="muted">筆記含私人問題、原回答、引用與供讀原碼。這是本機備忘，不是簽章收據，也不代表解讀正確。</p>
+        <p id="reading-note-status" class="muted" role="status"></p>
+      </details>
+      </div>
+    </section>
+  </main>
+  <footer id="reading-footer">離線閱讀 · 唯讀快照 · 手動選段或明確授權模型尋找原碼</footer>
+</body>
+</html>

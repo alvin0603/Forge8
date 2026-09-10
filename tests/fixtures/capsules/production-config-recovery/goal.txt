@@ -1,0 +1,1 @@
+Correct config/production.ini so the fixture's configuration checks pass; leave other files unchanged.

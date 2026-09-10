@@ -1,0 +1,88 @@
+{
+  "schema_version": 2,
+  "name": "llama.cpp native Linux CUDA 12.8 / sm_89 local build",
+  "build": 10621,
+  "version": "0.3.0-dev",
+  "commit": "c1d0e7a004015f23bc0233470b747b596f29b264",
+  "release": "b10621",
+  "platform": "linux-x86_64",
+  "cuda_runtime": "12.8.90",
+  "release_url": "https://github.com/ggml-org/llama.cpp/releases/tag/b10621",
+  "distribution": "Local source build; not an upstream or publicly distributed Linux CUDA release asset",
+  "build_provenance": {
+    "source_url": "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/c1d0e7a004015f23bc0233470b747b596f29b264",
+    "source_size_bytes": 36963693,
+    "source_sha256": "e381b23a9aba7e1615ef8d4713bc2f8d4777255a5b1124d633f0af280a2d5415",
+    "cuda_manifest_url": "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.8.1.json",
+    "cuda_manifest_sha256": "249e28a83008d711d5f72880541c8be6253f6d61608461de4fcb715554a6cf17",
+    "toolchain": {
+      "nvcc": "12.8.93",
+      "gcc": "13.3.0",
+      "cmake": "3.28.3",
+      "make": "4.3",
+      "host": "Ubuntu 24.04 / WSL2 x86_64",
+      "jobs": 4
+    },
+    "cuda_components": [
+      {"name": "cuda_nvcc", "version": "12.8.93", "sha256": "9961b3484b6b71314063709a4f9529654f96782ad39e72bf1e00f070db8210d3"},
+      {"name": "cuda_cudart", "version": "12.8.90", "sha256": "8d566b5fe745c46842dc16945cf36686227536decd2302c372be86da37faca68"},
+      {"name": "cuda_cccl", "version": "12.8.90", "sha256": "0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b"},
+      {"name": "libcublas", "version": "12.8.4.1", "sha256": "21718957c2cf000bacd69d36c95708a2319199e39e056f8b4f0f68e3b9f323bb"}
+    ],
+    "configuration": [
+      "Release; BUILD_SHARED_LIBS=ON; GGML_CUDA=ON; CMAKE_CUDA_ARCHITECTURES=89-real",
+      "GGML_NATIVE=OFF; CPU requires SSE4.2/F16C/FMA/BMI2/AVX/AVX2",
+      "GGML_CUDA_GRAPHS=ON; GGML_CUDA_FA=ON; GGML_CUDA_FA_ALL_QUANTS=OFF",
+      "GGML_CUDA_NCCL=OFF; GGML_CCACHE=OFF",
+      "LLAMA_BUILD_TESTS=OFF; LLAMA_BUILD_EXAMPLES=OFF; LLAMA_BUILD_APP=OFF",
+      "LLAMA_BUILD_UI=OFF; LLAMA_USE_PREBUILT_UI=OFF; LLAMA_OPENSSL=OFF",
+      "LLAMA_BUILD_NUMBER=10621; LLAMA_BUILD_COMMIT=c1d0e7a004015f23bc0233470b747b596f29b264; GIT_EXE empty",
+      "CMAKE_BUILD_WITH_INSTALL_RPATH=ON; CMAKE_INSTALL_RPATH=$ORIGIN; build-time -rpath-link to isolated toolkit/lib"
+    ],
+    "external_dependencies": [
+      "Existing Windows-provided WSL libcuda.so.1; tested driver 592.00 / CUDA driver API 13010",
+      "OS ELF loader, glibc, libstdc++, libgcc_s, libgomp; tested Ubuntu glibc 2.39 and GCC 13.3 libraries"
+    ],
+    "recipe": "docs/native-wsl-build.md",
+    "reproducibility": "Pinned inputs and this local artifact; no cross-machine bit-identical rebuild claim"
+  },
+  "assets": [
+    {
+      "filename": "llama-b10621-linux-cuda12.8-sm89-local.tar.gz",
+      "size_bytes": 634217337,
+      "sha256": "340e535052d6d03531ad421dbf7eac5009769935fa73f5de72dbc885e67acdcf"
+    }
+  ],
+  "install_dir": "llama-b10621-linux-cuda12.8",
+  "required_files": [
+    "llama-server", "llama-cli", "llama-bench",
+    "libllama-server-impl.so", "libllama-cli-impl.so", "libllama-bench-impl.so",
+    "libllama-common.so.0", "libllama.so.0", "libmtmd.so.0",
+    "libggml.so.0", "libggml-base.so.0", "libggml-cpu.so.0", "libggml-cuda.so.0",
+    "libcudart.so.12", "libcublas.so.12", "libcublasLt.so.12"
+  ],
+  "installed_files": [
+    {"filename": "LICENSE-CUDA", "size_bytes": 63021, "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07"},
+    {"filename": "LICENSE-cpp-httplib", "size_bytes": 1075, "sha256": "4b45cbe16d7b71b89ae6127e26e0d90a029198ca5e958ad8e3d0b8bbed364d8b"},
+    {"filename": "LICENSE-llama.cpp", "size_bytes": 1078, "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"},
+    {"filename": "LICENSE-rotate-bits", "size_bytes": 1088, "sha256": "ca0b44aec101afb6b46f4c39b23369fa06a64fb9c0add37c2689d702156fee55"},
+    {"filename": "LICENSE-sha256", "size_bytes": 41, "sha256": "b81d0022ca6367918c67b57e9647d3513ee58809fd4b0ef0b3492f1356bced25"},
+    {"filename": "LICENSE-xxhash", "size_bytes": 1389, "sha256": "6ffedbc0f7878612d2b23589f1ff2ab15633e1df7963a5d9fc750ec5500c7e7a"},
+    {"filename": "libcublas.so.12", "size_bytes": 116388640, "sha256": "031ce6c2cbfbb9468f040527cab5c599069ce5609e73e28f87503881063eac21"},
+    {"filename": "libcublasLt.so.12", "size_bytes": 751771728, "sha256": "10b5e6631cf8115c661eb895ed1533826308b58f7956466f53d236a40c9b622c"},
+    {"filename": "libcudart.so.12", "size_bytes": 728800, "sha256": "c3a75b33af334a3486d197dbd1584a2985183ba4688d237a2be5f2f679329920"},
+    {"filename": "libggml-base.so.0", "size_bytes": 935368, "sha256": "dbd289e5a0222ffac209e241121605e4f30f87f77392c30870d3bdad840cbef2"},
+    {"filename": "libggml-cpu.so.0", "size_bytes": 1143800, "sha256": "79ea5ec6087ec2cfffad4f729d3f7e01e39e171eec49faa285a2f9c8edc633a5"},
+    {"filename": "libggml-cuda.so.0", "size_bytes": 39170296, "sha256": "7ff85f13770f24619b770a8e9b33d340c25966feaa61c29d3ecbd2bb7d26701f"},
+    {"filename": "libggml.so.0", "size_bytes": 56016, "sha256": "95588f761753cbddabd252382d4f2312398f9097ad54a2a7ec29e254a20e75a5"},
+    {"filename": "libllama-bench-impl.so", "size_bytes": 472200, "sha256": "f9a81d2b653017666a4fb136e4d022485c4af3d92fc47e83a539bd2d3846d83f"},
+    {"filename": "libllama-cli-impl.so", "size_bytes": 243152, "sha256": "8fd56fe3d96986051c8f7cd8a39cd7860fd4d5682118044c6d429c8854bc79e5"},
+    {"filename": "libllama-common.so.0", "size_bytes": 5742184, "sha256": "fe4644a9b351a3d072f19edc78eab4b4ac518d2d3f2eb5bc8afd8285cdf7891f"},
+    {"filename": "libllama-server-impl.so", "size_bytes": 3666192, "sha256": "8cd752356f0c8f00981189d7d695b06d6b9d7f9eba6963d368e36a549848fe9d"},
+    {"filename": "libllama.so.0", "size_bytes": 4583024, "sha256": "a0a1185995bc72215356ef4cf42b6ac05b2ba68fc2d9764ccd739a5afadad911"},
+    {"filename": "libmtmd.so.0", "size_bytes": 1933672, "sha256": "0563a4b1d6a5f008c15600eea9b824ad3861bef7894f89223f8bc124cb3b0d4d"},
+    {"filename": "llama-bench", "size_bytes": 17920, "sha256": "07c667e448032b6c629033824edd4bbe2fd3590466907fd41a35e195138ab4e9"},
+    {"filename": "llama-cli", "size_bytes": 1242680, "sha256": "ef4cea577c2d8f32984cad0e32011df317600bc0f9561fe13ac58912d598fe49"},
+    {"filename": "llama-server", "size_bytes": 17920, "sha256": "27bee1ffd1217a79ad44baa7e7fe984c91c8d1597ae1cd0ee98dca236323347e"}
+  ]
+}

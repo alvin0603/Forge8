@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "gemma4-e4b-qat-q4",
+  "publisher": "Google",
+  "repository": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+  "revision": "4b4a2c1d584be7264f87aac328a1bc739ce81b6c",
+  "license": "Apache-2.0",
+  "source_url": "https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf",
+  "files": [
+    {
+      "role": "target",
+      "filename": "gemma-4-E4B_q4_0-it.gguf",
+      "size_bytes": 5154941280,
+      "sha256": "676c35070db6dbe52f93e9c864ee0fba4eddea94b9c875d9cb10daff453fbaee",
+      "download_url": "https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf/resolve/4b4a2c1d584be7264f87aac328a1bc739ce81b6c/gemma-4-E4B_q4_0-it.gguf"
+    }
+  ],
+  "capabilities_to_verify": [
+    "traditional-chinese",
+    "code",
+    "reasoning",
+    "native-tools",
+    "json-schema"
+  ],
+  "optional_profiles_not_downloaded": [
+    "multimodal projector",
+    "matching QAT MTP assistant"
+  ]
+}

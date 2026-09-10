@@ -1,0 +1,38 @@
+{
+  "schema_version": "0.1",
+  "id": "repository.production-config-recovery",
+  "title": "Production configuration test fixture",
+  "domain": "repository",
+  "task_type": "log_driven_config_fix",
+  "difficulty": "medium",
+  "prompt": "goal.txt",
+  "workspace": "workspace",
+  "policy": {
+    "network": "deny",
+    "workspace_access": "read_write",
+    "allowed_write_roots": [
+      "workspace/config/production.ini"
+    ],
+    "stdlib_only": true
+  },
+  "budget": {
+    "wall_time_seconds": 180,
+    "max_processes": 8,
+    "max_output_bytes": 200000
+  },
+  "verifier": {
+    "command": [
+      "python3",
+      "verifier/verify.py"
+    ],
+    "success_exit_code": 0,
+    "network_required": false
+  },
+  "required_artifacts": [
+    "workspace/config/production.ini"
+  ],
+  "tags": [
+    "python",
+    "test-fixture"
+  ]
+}
