@@ -14,6 +14,7 @@ import stat
 import sys
 import unittest
 from hashlib import sha256
+from functools import lru_cache
 from types import CodeType
 
 from .repository import (RepositoryError, _is_reparse_point, _read_regular_file,
@@ -130,10 +131,17 @@ def capture_test(root: Path, selector: str, source_paths: tuple[str, ...]) -> di
     events, active, byte_count, next_call = report["events"], {}, 0, 1
     selected, policy, method_code = {}, None, None
 
+    @lru_cache(maxsize=128)
+    def source_path(absolute_filename):
+        # Cached imports can keep Windows 8.3 spellings of selected files.
+        # Resolve once per spelling for this capture; code equality still gates
+        # events, and later source-byte checks remain independent of this cache.
+        return os.path.normcase(os.path.realpath(absolute_filename))
+
     def trace(frame, event, arg):
         nonlocal byte_count, next_call
         try:
-            filename = os.path.normcase(os.path.abspath(frame.f_code.co_filename))
+            filename = source_path(os.path.abspath(frame.f_code.co_filename))
             if filename not in selected:
                 return None
             if frame.f_code not in selected[filename][1]:
@@ -203,7 +211,7 @@ def capture_test(root: Path, selector: str, source_paths: tuple[str, ...]) -> di
         if not inspect.isfunction(method) or method.__code__.co_flags & _ASYNC_FLAGS:
             report["unsupported"] = True
             raise _Invalid("Test method must be an ordinary synchronous function")
-        if os.path.normcase(os.path.abspath(method.__code__.co_filename)) not in selected:
+        if source_path(os.path.abspath(method.__code__.co_filename)) not in selected:
             raise _Invalid("Test method implementation is outside selected sources")
         method_code = method.__code__
         suite = unittest.TestSuite([cls(method_name)])

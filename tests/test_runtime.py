@@ -86,7 +86,7 @@ class RuntimeIntegrityTests(unittest.TestCase):
 
     def test_optional_cancellation_keeps_all_pins_and_legacy_hash_calls(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
             archive, installed, model = root / "asset.zip", root / "install/server.exe", root / "model.gguf"
             installed.parent.mkdir()
             for path in (archive, installed, model):

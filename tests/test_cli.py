@@ -990,7 +990,7 @@ class PublicCLIContractTests(unittest.TestCase):
             return outcome
 
         with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
+            root = Path(raw_root).resolve()
             source = root / "source"
             assets = root / "assets"
             source.mkdir()
@@ -1141,7 +1141,7 @@ class PublicCLIContractTests(unittest.TestCase):
         for system in ("Windows", "Linux"):
             for command in ("fix", "explain"):
                 with self.subTest(system=system, command=command), tempfile.TemporaryDirectory() as raw:
-                    root = Path(raw)
+                    root = Path(raw).resolve()
                     source, assets = root / "source", root / "assets"
                     source.mkdir()
                     assets.mkdir()

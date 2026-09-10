@@ -20,7 +20,7 @@ class ExperimentAdmissionTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.source = self.root / "owned.py"
         self.inputs = self.root / "input.json"
         self.source.write_bytes(b"def entry(value):\n    return value\n")
@@ -150,7 +150,7 @@ class ExperimentArchiveTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.archive = self.root / "owned.zip"
         self.destination = self.root / "unpacked"
 
@@ -223,7 +223,7 @@ class ExperimentArchiveTests(unittest.TestCase):
 class ExperimentControllerTests(unittest.TestCase):
     def test_expected_snapshot_hash_mismatch_prevents_runtime_and_worker_io(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
+            root = Path(raw).resolve()
             source, inputs = root / "owned.py", root / "arguments.json"
             source.write_bytes(b"def entry():\n    return 1\n")
             inputs.write_bytes(b'{"args":[],"kwargs":{}}')
@@ -249,7 +249,7 @@ class ExperimentControllerTests(unittest.TestCase):
     def test_runtime_metadata_must_match_and_full_integrity_must_pass(self) -> None:
         with tempfile.TemporaryDirectory() as raw, \
                 patch.object(experiments, "native_platform", return_value="linux"):
-            root = Path(raw)
+            root = Path(raw).resolve()
             path = root / "runtime.json"
             cache_pin = {"filename": "python.cwasm", "size_bytes": 5, "sha256": "1" * 64}
             manifest = {

@@ -20,6 +20,15 @@ depend on private development directories. An earlier Windows run exposed a
 header-rejection test race; the fixture now requires rejection before sending
 the body, without relaxing server authentication.
 
+The first GitHub-hosted run passed on Ubuntu but exposed Windows short-path
+assumptions and a Python 3.12 file-timestamp discrepancy. The fixes retain file
+identity checks and recognize cached source aliases during observation. Added
+regressions check both valid aliases and stale code, plus timestamp/identity
+changes; tests are not skipped to accommodate the runner.
+After these fixes, local full suites passed 1,373 tests on each platform (WSL:
+91.3 s, 12 skips; Windows: 153.7 s, 35 skips). A separate Windows Python 3.12.10
+check passed 189 relevant tests, with 6 platform/optional-dependency skips.
+
 - The pre-publication application passed 1,367 Python tests on each native
   platform: Windows Python 3.10 and WSL Python 3.12. Platform-specific skips were
   35 and 12 respectively. Seven Node UI harnesses passed.

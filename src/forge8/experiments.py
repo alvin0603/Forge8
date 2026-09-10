@@ -83,7 +83,11 @@ def _file(path: Path, limit: int, *, binary: bool = False) -> bytes:
     if binary:
         # Generated ZIPs are binary; source/JSON still use the unchanged text
         # admission below. Bound reads and bind the open handle to its path.
-        fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        # Windows Python 3.12 can report creation time through lstat's ctime
+        # but metadata-change time through fstat's ctime. Bind the two APIs by
+        # birth time, then check each API's own ctime for changes independently.
+        timestamp = "st_birthtime_ns" if os.name == "nt" and hasattr(metadata, "st_birthtime_ns") else "st_ctime_ns"
+        fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", timestamp)
         expected = tuple(getattr(metadata, name) for name in fields)
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         with os.fdopen(os.open(target, flags), "rb") as handle:
@@ -92,8 +96,11 @@ def _file(path: Path, limit: int, *, binary: bool = False) -> bytes:
                 raise ValueError("binary input changed before reading")
             data = handle.read(limit + 1)
             final = os.fstat(handle.fileno())
+        current = target.lstat()
         if (len(data) != metadata.st_size or tuple(getattr(final, name) for name in fields) != expected
-                or tuple(getattr(target.lstat(), name) for name in fields) != expected):
+                or tuple(getattr(current, name) for name in fields) != expected
+                or final.st_ctime_ns != opened.st_ctime_ns
+                or current.st_ctime_ns != metadata.st_ctime_ns):
             raise ValueError("binary input changed while reading")
     else:
         data = _read_regular_file(target, metadata, path.name)

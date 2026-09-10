@@ -211,6 +211,32 @@ class ObservationTests(unittest.TestCase):
         self.assertIs(sys.modules[dependency], cached)
         self.assertIn("inner", {e["function"].split(".")[-1] for e in report["events"]})
 
+    def test_cached_filename_alias_keeps_events_and_rejects_stale_code(self):
+        for stale in (False, True):
+            with self.subTest(stale=stale):
+                selector, paths = self.fixture("def test_case(self):\n    self.assertTrue(True)\n")
+                module_name = selector.split(".")[0]
+                with patch.object(sys, "path", [str(self.root), *sys.path]):
+                    module = importlib.import_module(module_name)
+                path = (self.root / paths[0]).resolve()
+                alias = str(path.parent / "short-spelling" / path.name)
+                method = module.Case.test_case
+                method.__code__ = method.__code__.replace(co_filename=alias)
+                if stale:
+                    path.write_text(path.read_text().replace("self.assertTrue(True)", "self.assertTrue(False)"))
+                realpath = os.path.realpath
+
+                def resolve(value, **kwargs):
+                    return str(path) if os.fspath(value) == alias else realpath(value, **kwargs)
+
+                with patch.object(os.path, "realpath", side_effect=resolve):
+                    report = capture_test(self.root, selector, paths)
+                self.assertTrue(report["source_unchanged"])
+                self.assertEqual(report["complete"], not stale)
+                self.assertEqual(report["unmatched_source_code"], stale)
+                self.assertEqual(report["method_observed"], not stale)
+                self.assertEqual(bool(report["events"]), not stale)
+
     def test_compile_failure_and_code_object_cap_precede_import(self):
         selector, paths = self.fixture("def test_case(self): pass")
         name = "oversized_codes.py"

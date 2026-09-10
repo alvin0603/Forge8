@@ -8,7 +8,7 @@ import stat
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, Mock, patch
 import zipfile
 
 from forge8 import experiments
@@ -20,6 +20,80 @@ ENTRY = (b"from .helper import OFFSET\r\n"
          b"def other(value):\r\n    return value\r\n")
 HELPER = "# retained invisible character: \u200b\r\nOFFSET = 2\r\n".encode("utf-8")
 FILES = {"ownedpkg/reader.py": ENTRY, "ownedpkg/__init__.py": b"", "ownedpkg/helper.py": HELPER}
+
+
+class BinaryFileIdentityTests(unittest.TestCase):
+    def check_read(self, *, native="nt", birth=True, changes=(), error=None):
+        # Model the two stat APIs independently; never change global os.name
+        # (which would also change pathlib's native path implementation).
+        path = Path(__file__).resolve().parent / "synthetic-selected.zip"
+        fields = dict(st_dev=1, st_ino=2, st_mode=stat.S_IFREG | 0o600,
+                      st_nlink=1, st_size=4, st_mtime_ns=100,
+                      st_ctime_ns=200, st_file_attributes=0)
+        if birth:
+            fields["st_birthtime_ns"] = 50
+        snapshots = {name: SimpleNamespace(**fields)
+                     for name in ("before", "opened", "final", "current")}
+        if native == "nt" and birth:
+            snapshots["opened"].st_ctime_ns = 300
+            snapshots["final"].st_ctime_ns = 300
+        for name, field, value in changes:
+            setattr(snapshots[name], field, value)
+        handle = Mock()
+        handle.fileno.return_value = 7
+        handle.read.return_value = b"PK\x00\xff"
+        context = MagicMock()
+        context.__enter__.return_value = handle
+        fake_os = SimpleNamespace(
+            name=native, O_RDONLY=0, O_BINARY=2, O_NOFOLLOW=4,
+            open=Mock(return_value=7), fdopen=Mock(return_value=context),
+            fstat=Mock(side_effect=[snapshots["opened"], snapshots["final"]]),
+        )
+        with patch.object(experiments, "os", fake_os), \
+                patch.object(experiments, "_strict_existing_directory", return_value=path.parent), \
+                patch.object(Path, "lstat", side_effect=[snapshots["before"], snapshots["current"]]):
+            if error:
+                with self.assertRaisesRegex(ValueError, error):
+                    experiments._file(path, 4, binary=True)
+            else:
+                self.assertEqual(experiments._file(path, 4, binary=True), b"PK\x00\xff")
+        fake_os.open.assert_called_once_with(path, 6)
+        fake_os.fdopen.assert_called_once_with(7, "rb")
+        context.__exit__.assert_called_once()
+        if error == "before reading":
+            handle.read.assert_not_called()
+        else:
+            handle.read.assert_called_once_with(5)
+
+    def test_distinct_windows_api_ctimes_are_valid_with_equal_birth_identity(self):
+        self.check_read()
+        self.check_read(native="posix")
+        self.check_read(birth=False)
+
+    def test_posix_and_legacy_windows_still_bind_ctime_across_apis(self):
+        for native, birth in (("posix", True), ("nt", False)):
+            with self.subTest(native=native, birth=birth):
+                self.check_read(native=native, birth=birth,
+                                changes=(("opened", "st_ctime_ns", 301),), error="before reading")
+
+    def test_windows_birth_identity_is_checked_before_and_after_read(self):
+        for name in ("opened", "final", "current"):
+            with self.subTest(snapshot=name):
+                self.check_read(changes=((name, "st_birthtime_ns", 51),),
+                                error="before reading" if name == "opened" else "while reading")
+
+    def test_descriptor_and_path_ctime_drift_are_independently_rejected(self):
+        for name, changed in (("final", 301), ("current", 201)):
+            with self.subTest(snapshot=name):
+                self.check_read(changes=((name, "st_ctime_ns", changed),), error="while reading")
+
+    def test_birthtime_does_not_replace_other_identity_checks(self):
+        for field, value in (("st_dev", 9), ("st_ino", 9), ("st_mode", stat.S_IFIFO),
+                             ("st_nlink", 2), ("st_size", 3), ("st_mtime_ns", 101)):
+            for name in ("opened", "final", "current"):
+                with self.subTest(field=field, snapshot=name):
+                    self.check_read(changes=((name, field, value),),
+                                    error="before reading" if name == "opened" else "while reading")
 
 
 class ModuleSetAdmissionTests(unittest.TestCase):

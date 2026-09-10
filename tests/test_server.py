@@ -165,7 +165,7 @@ class FaultingCloseStream:
 class ServerFixture(unittest.TestCase):
     def make_workspace(self, *, runtime_platform="windows-x86_64", executable_name=None):
         temporary = tempfile.TemporaryDirectory()
-        root = Path(temporary.name)
+        root = Path(temporary.name).resolve()
         if executable_name is None:
             executable_name = "llama-server.exe" if runtime_platform.startswith("windows") else "llama-server"
         runtime_root = root / "runtime"
