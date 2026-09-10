@@ -132,6 +132,36 @@ class ExperimentWorkerModulesTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "changed before reading"):
             worker._module_bundle_directory(self.request_path, self.bundle)
 
+    def test_windows_archive_birth_identity_and_independent_ctimes(self) -> None:
+        real_lstat = Path.lstat
+        actual = real_lstat(self.archive)
+        before = SimpleNamespace(**{name: getattr(actual, name) for name in dir(actual)
+                                    if name.startswith("st_")})
+        before.st_birthtime_ns, before.st_ctime_ns = 50, 100
+        for change in (None, "birth", "descriptor", "path"):
+            with self.subTest(change=change):
+                opened = deepcopy(before)
+                opened.st_ctime_ns = 200  # A different API meaning, not drift.
+                final, current = deepcopy(opened), deepcopy(before)
+                if change == "birth":
+                    final.st_birthtime_ns += 1
+                elif change == "descriptor":
+                    final.st_ctime_ns += 1
+                elif change == "path":
+                    current.st_ctime_ns += 1
+                archive_stats = iter((before, before, current))
+
+                def lstat(path, *args, **kwargs):
+                    return next(archive_stats) if path == self.archive else real_lstat(path, *args, **kwargs)
+
+                native = SimpleNamespace(name="nt", fstat=MagicMock(side_effect=[opened, final]))
+                with patch.object(worker, "os", native), patch.object(Path, "lstat", lstat):
+                    if change:
+                        with self.assertRaisesRegex(ValueError, "archive integrity failed"):
+                            worker._module_bundle_directory(self.request_path, self.bundle)
+                    else:
+                        self.assertEqual(worker._module_bundle_directory(self.request_path, self.bundle), self.modules)
+
     def test_execute_keeps_legacy_mount_and_adds_only_readonly_bundle_mount_when_selected(self) -> None:
         for bundled in (False, True):
             runtime = MagicMock()

@@ -142,16 +142,23 @@ def _module_bundle_directory(request_path: Path | None, bundle: dict) -> Path:
     before = archive.lstat()
     if before.st_size != bundle["size_bytes"]:
         raise ValueError("selected module archive size changed")
-    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+    # Windows 3.12's lstat/fstat ctime fields may have different meanings.
+    # Bind by birth time there, but retain each API's independent ctime check.
+    timestamp = "st_birthtime_ns" if os.name == "nt" and hasattr(before, "st_birthtime_ns") else "st_ctime_ns"
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", timestamp)
     expected = tuple(getattr(before, field) for field in fields)
     with archive.open("rb") as handle:
-        if tuple(getattr(os.fstat(handle.fileno()), field) for field in fields) != expected:
+        opened = os.fstat(handle.fileno())
+        if tuple(getattr(opened, field) for field in fields) != expected:
             raise ValueError("selected module archive changed before reading")
         data = handle.read(128 * 1024 + 1)
         after = os.fstat(handle.fileno())
+    current = archive.lstat()
     if (len(data) != bundle["size_bytes"] or hashlib.sha256(data).hexdigest() != bundle["sha256"]
             or tuple(getattr(after, field) for field in fields) != expected
-            or tuple(getattr(archive.lstat(), field) for field in fields) != expected):
+            or tuple(getattr(current, field) for field in fields) != expected
+            or after.st_ctime_ns != opened.st_ctime_ns
+            or current.st_ctime_ns != before.st_ctime_ns):
         raise ValueError("selected module archive integrity failed")
     return directory
 
