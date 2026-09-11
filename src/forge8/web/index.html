@@ -70,6 +70,9 @@
         <label for="experiment-input">一組 JSON 輸入（args 與 kwargs）</label>
         <textarea id="experiment-input" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="experiment-input-note">{"args":[],"kwargs":{}}</textarea>
         <p id="experiment-input-note" class="muted">原文送出，保留大型整數；最多 16 KiB，不自動修正或裁切 JSON。</p>
+        <label id="experiment-search-option" class="experiment-trace-option" hidden><input id="experiment-search-enabled" type="checkbox" aria-describedby="experiment-search-note">找出不同結果的輸入（最多 12 組）</label>
+        <p id="experiment-search-note" class="muted" hidden></p>
+        <details id="experiment-search-plan" hidden><summary>搜尋輸入預覽 · 完整清單</summary><ol id="experiment-search-inputs"></ol></details>
         <label id="experiment-trace-option" class="experiment-trace-option" hidden><input id="experiment-trace-lines" type="checkbox" aria-describedby="experiment-trace-option-note">記錄本次呼叫的原碼行（選用）</label>
         <p id="experiment-trace-option-note" class="muted" hidden>僅單檔；最多 1,000 次行事件，可能增加執行時間。勾選不執行，按下方執行才生效。</p>
         <div class="experiment-actions"><button id="experiment-run" type="button" disabled>執行完整模組，再呼叫函式</button><button id="experiment-cancel" type="button" class="quiet" hidden>取消這次試跑</button><button id="experiment-recheck" type="button" class="quiet" hidden>重新確認狀態（不執行）</button></div>
@@ -105,6 +108,7 @@
         </section>
         <section id="experiment-pair-result" hidden aria-label="HEAD 與目前版本的配對回報">
           <h4 id="experiment-pair-summary"></h4>
+          <section id="experiment-search-current" hidden aria-label="目前配對回報的實際輸入"><h4 id="experiment-search-current-label"></h4><pre id="experiment-search-current-input" tabindex="0"></pre><p class="muted">只比較回傳值／例外，不觀察引數修改。差異可能來自非決定性或不符合契約的輸入；不是已證實的 bug，也不驗證 AI 解釋。</p></section>
           <details id="experiment-submitted-input" hidden><summary>本次已送出的輸入（唯讀）</summary><p class="muted">建立本次試跑時送出的原文；修改上方草稿不會改變此紀錄。展開不會執行程式碼。</p><pre id="experiment-submitted-input-text" tabindex="0" aria-label="本次已送出的 JSON 輸入"></pre></details>
           <p class="muted">只比較這組輸入的 guest 回報（canonical-json-v1），不是測試通過或可信 oracle。相同不代表程式等價；不同不證明由修改造成，也不驗證 AI 的解釋。</p>
           <div class="experiment-pair-results">

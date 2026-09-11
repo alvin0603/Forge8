@@ -615,10 +615,13 @@ class ReadingDesk:
             return target
 
     def _prepare_paired_experiment(self, payload: dict) -> dict:
-        from .experiments import RUNTIME_NAME, native_platform, prepare_module
-        if (set(payload) != {"mode", "file", "version", "entry"}
+        from .experiments import RUNTIME_NAME, native_platform, prepare_input_search, prepare_module
+        searching = "search" in payload
+        expected = {"mode", "file", "version", "entry"} | ({"search", "input_text"} if searching else set())
+        if (set(payload) != expected
                 or payload["mode"] != "head_current"
-                or any(type(payload[key]) is not str for key in payload)):
+                or any(type(payload[key]) is not str for key in payload)
+                or searching and payload["search"] != "nearby-v1"):
             raise ValueError("expected an explicit HEAD/current mode and one current-version function")
         with self.lock:
             if not self.allow_experiments:
@@ -641,12 +644,15 @@ class ReadingDesk:
             runtime = self.assets / f"experiment-{RUNTIME_NAME}-{native_platform()}"
             if not (runtime / "runtime.json").is_file():
                 raise ValueError("optional experiment runtime is not installed; use forge8 experiment setup --archives <pinned-local-archives> first")
-            return {"mode": "head_current", "file": item["id"], "path": item["path"],
+            target = {"mode": "head_current", "file": item["id"], "path": item["path"],
                 "version": self.project["version"], "entry": entry,
                 "source_sha256": pin.sha256, "source_bytes": pin.size_bytes,
                 "head": self.comparison.head, "current_snapshot_sha256": self.comparison.original_snapshot_sha256,
                 "before": {"file": prior["id"], "path": prior["path"],
                     "source_sha256": prior_pin.sha256, "source_bytes": prior_pin.size_bytes}}
+            if searching:
+                target["search_plan"] = prepare_input_search(payload["input_text"].encode("utf-8"))
+            return target
 
     def start_experiment(self, payload: dict) -> dict:
         from .experiments import RUNTIME_NAME, _file, native_platform, prepare_inputs, retain_trial_result, run_experiment
@@ -776,10 +782,12 @@ class ReadingDesk:
 
     def _start_paired_experiment(self, payload: dict) -> dict:
         from .experiments import (RUNTIME_NAME, _file, _json, _write_json, compare_reported_results,
-                                  native_platform, prepare_inputs, run_experiment)
+                                  native_platform, prepare_input_search, prepare_inputs, run_experiment)
+        searching = "search" in payload
         expected = {"mode", "file", "version", "entry", "source_sha256", "before_sha256",
-                    "head", "input_text", "allow_execution"}
-        if set(payload) != expected or payload["allow_execution"] is not True:
+                    "head", "input_text", "allow_execution"} | ({"search", "search_plan_sha256"} if searching else set())
+        if (set(payload) != expected or payload["allow_execution"] is not True
+                or searching and payload["search"] != "nearby-v1"):
             raise ValueError("explicit consent for both complete modules and exact HEAD/current identities is required")
         with self.lock:
             if self._busy():
@@ -792,6 +800,9 @@ class ReadingDesk:
                 raise ValueError("input must be raw JSON text, not a browser-converted object")
             raw_input = payload["input_text"].encode("utf-8")
             prepare_inputs(raw_input)
+            search_plan = prepare_input_search(raw_input) if searching else None
+            if searching and payload["search_plan_sha256"] != search_plan["sha256"]:
+                raise ValueError("input search plan changed; preview and authorize the exact inputs again")
             input_sha = hashlib.sha256(raw_input).hexdigest()
             captured = self.comparison
             snapshot = Path(self.browse_snapshot.snapshot_root)
@@ -808,42 +819,60 @@ class ReadingDesk:
                 "input_text": payload["input_text"], "elapsed_seconds": 0.0, "observations": {},
                 "comparison_result": "unavailable", "comparison_rule": "canonical-json-v1",
                 "comparison_unchanged": False}
+            if searching:
+                self.experiment["search"] = {"strategy": "nearby-v1", "plan_sha256": search_plan["sha256"],
+                    "total": len(search_plan["inputs"]), "completed": 0, "case_index": 1,
+                    "input_text": payload["input_text"], "stop_reason": None}
 
             def run():
                 guards, reports, report_pins = [], {}, {}
                 runtime_sha = None
+                runtime_identity = None
                 completed_result = None
+                deadline = started + search_plan["max_seconds"] if searching else None
+                cases, retained = [], {"arguments.json": input_sha}
+
+                def interrupted():
+                    return cancellation.is_set() or deadline is not None and time.monotonic() >= deadline
 
                 def check_sources():
-                    if cancellation.is_set():
+                    if interrupted():
                         raise KeyboardInterrupt
                     gate = captured.guard()  # No desk lock: cancellation stays available.
                     guards.append({"ok": gate.ok, "reason": gate.reason, "evidence": gate.evidence})
-                    if cancellation.is_set():
+                    if interrupted():
                         raise KeyboardInterrupt
                     if not gate.ok:
                         raise ValueError(gate.reason or "paired comparison source check failed")
 
-                def report_bytes(side):
-                    return _file(directory / side / "experiment.json", 2 * 1024**2)
-
-                try:
+                def run_pair(pair_directory, pair_inputs, pair_sha, case_record):
+                    nonlocal guards, reports, report_pins, runtime_sha, runtime_identity
+                    guards, reports, report_pins = [], {}, {}
+                    def report_bytes(side):
+                        return _file(pair_directory / side / "experiment.json", 2 * 1024**2)
                     check_sources()
-                    runtime_sha = hashlib.sha256(_file(runtime / "runtime.json", 128 * 1024)).hexdigest()
+                    manifest_sha = hashlib.sha256(_file(runtime / "runtime.json", 128 * 1024)).hexdigest()
+                    if runtime_sha is not None and manifest_sha != runtime_sha:
+                        raise ValueError("paired runtime manifest changed between inputs")
+                    runtime_sha = manifest_sha
                     for side, member in (("before", target["before"]), ("after", target)):
                         if side == "after":
                             check_sources()
-                        if (hashlib.sha256(_file(inputs, 16_384)).hexdigest() != input_sha
+                        if (hashlib.sha256(_file(pair_inputs, 16_384)).hexdigest() != pair_sha
                                 or hashlib.sha256(_file(runtime / "runtime.json", 128 * 1024)).hexdigest() != runtime_sha):
                             raise ValueError("paired input or runtime manifest changed before execution")
                         with self.lock:
-                            if cancellation.is_set():
+                            if interrupted():
                                 raise KeyboardInterrupt
                             self.experiment["phase"] = side
-                        report = run_experiment(runtime, snapshot / member["path"], target["entry"], inputs,
-                            directory / side, allow_execution=True, expected_source_sha256=member["source_sha256"],
-                            expected_input_sha256=input_sha, cancel_requested=cancellation.is_set)
+                        report = run_experiment(runtime, snapshot / member["path"], target["entry"], pair_inputs,
+                            pair_directory / side, allow_execution=True, expected_source_sha256=member["source_sha256"],
+                            expected_input_sha256=pair_sha, cancel_requested=interrupted)
                         raw_report = report_bytes(side)
+                        report_sha = hashlib.sha256(raw_report).hexdigest()
+                        if searching:
+                            retained[(pair_directory / side / "experiment.json").relative_to(directory).as_posix()] = report_sha
+                            case_record["child_reports"][side] = report_sha
                         # Bind exactly the controller's actual immutable report, not
                         # a fresh summary or a guest-supplied artifact path.
                         if (json.dumps(_json(raw_report), sort_keys=True, ensure_ascii=True, allow_nan=False)
@@ -851,40 +880,104 @@ class ReadingDesk:
                                 or type(report.get("schema_version")) is not int or report["schema_version"] != 1
                                 or report.get("kind") != "forge8.experiment"
                                 or any(report.get("identity", {}).get(key) != value for key, value in
-                                    (("source_sha256", member["source_sha256"]), ("input_sha256", input_sha), ("entry", target["entry"])))):
+                                    (("source_sha256", member["source_sha256"]), ("input_sha256", pair_sha), ("entry", target["entry"])))):
                             raise ValueError("paired child report identity changed")
                         reports[side] = report
-                        report_pins[side] = hashlib.sha256(raw_report).hexdigest()
+                        report_pins[side] = report_sha
                         observation = {**_paired_observation(report), "report_sha256": report_pins[side]}
                         with self.lock:
                             self.experiment["observations"][side] = observation
                         if not observation["complete"]:
                             raise ValueError(f"{side} trial did not complete with intact sources, runtime and cleanup; no comparison")
+                        if searching and "result_text" not in observation:
+                            raise ValueError(f"{side} guest result is unavailable; input search stopped")
                     with self.lock:
                         self.experiment["phase"] = "checking"
                     check_sources()
                     if (hashlib.sha256(_file(runtime / "runtime.json", 128 * 1024)).hexdigest() != runtime_sha
                             or json.dumps(reports["before"]["runtime"], sort_keys=True, allow_nan=False)
                                 != json.dumps(reports["after"]["runtime"], sort_keys=True, allow_nan=False)
-                            or hashlib.sha256(_file(inputs, 16_384)).hexdigest() != input_sha
+                            or hashlib.sha256(_file(pair_inputs, 16_384)).hexdigest() != pair_sha
                             or any(hashlib.sha256(report_bytes(side)).hexdigest() != pin for side, pin in report_pins.items())):
                         raise ValueError("paired runtime, input or child report changed")
+                    if searching:
+                        identity = json.dumps(reports["before"]["runtime"], sort_keys=True, allow_nan=False)
+                        if runtime_identity is not None and identity != runtime_identity:
+                            raise ValueError("paired reported runtime changed between inputs")
+                        runtime_identity = identity
                     result = compare_reported_results(reports["before"].get("reported_result"), reports["after"].get("reported_result"))
-                    completed_result = result
+                    return result
+
+                try:
+                    if not searching:
+                        completed_result = run_pair(directory, inputs, input_sha, None)
+                    else:
+                        for index, item in enumerate(search_plan["inputs"], 1):
+                            if interrupted():
+                                raise KeyboardInterrupt
+                            pair_directory = directory / f"case-{index:02}"
+                            pair_directory.mkdir(mode=0o700)
+                            pair_inputs = pair_directory / "arguments.json"
+                            data = item["input_text"].encode("utf-8")
+                            with pair_inputs.open("xb") as handle:
+                                handle.write(data)
+                            pair_sha = hashlib.sha256(data).hexdigest()
+                            retained[pair_inputs.relative_to(directory).as_posix()] = pair_sha
+                            case_record = {"index": index, "input_sha256": pair_sha,
+                                "child_reports": {}, "receipt_sha256": None}
+                            cases.append(case_record)
+                            with self.lock:
+                                if interrupted():
+                                    raise KeyboardInterrupt
+                                self.experiment.update(phase="checking", observations={})
+                                self.experiment["search"].update(case_index=index, input_text=item["input_text"])
+                            result = run_pair(pair_directory, pair_inputs, pair_sha, case_record)
+                            if result == "unavailable":
+                                raise ValueError("paired guest results are unavailable; input search stopped")
+                            with self.lock:
+                                if interrupted():
+                                    raise KeyboardInterrupt
+                                pair_final = deepcopy(self.experiment)
+                                pair_final.pop("search")
+                                pair_final.update(id=f"{identifier}-case-{index:02}", input_text=item["input_text"],
+                                    status="completed", comparison_result=result, comparison_unchanged=True,
+                                    elapsed_seconds=round(time.monotonic() - started, 2))
+                            pair_receipt = {"schema_version": 1, "kind": "forge8.paired_experiment", "target": target,
+                                "input_sha256": pair_sha, "runtime_manifest_sha256": runtime_sha,
+                                "guards": guards, "child_reports": dict(report_pins), "result": pair_final,
+                                "notice": "Two guest-reported JSON observations; not a trusted oracle, equivalence, causal proof or validation of an AI explanation."}
+                            path = pair_directory / "comparison-experiment.json"
+                            _write_json(path, pair_receipt)
+                            case_record["receipt_sha256"] = hashlib.sha256(_file(path, 2 * 1024**2)).hexdigest()
+                            retained[path.relative_to(directory).as_posix()] = case_record["receipt_sha256"]
+                            with self.lock:
+                                self.experiment["search"]["completed"] = index
+                            if result == "different":
+                                break
+                        check_sources()
+                        if (hashlib.sha256(_file(runtime / "runtime.json", 128 * 1024)).hexdigest() != runtime_sha
+                                or any(hashlib.sha256(_file(directory / name, 2 * 1024**2)).hexdigest() != pin
+                                    for name, pin in retained.items())):
+                            raise ValueError("input search retained input, runtime or paired receipt/report changed")
+                        completed_result = result
                 except CheckCleanupError as exc:
                     with self.lock:
                         self.experiment.update(status="incomplete", cleanup_unknown=True,
                             error=f"Owned process cleanup is unconfirmed; new work is blocked. {exc}"[:1000])
                 except KeyboardInterrupt:
-                    cancellation.set()
+                    if not (deadline is not None and time.monotonic() >= deadline):
+                        cancellation.set()
                 except Exception as exc:
                     with self.lock:
                         self.experiment.update(status="incomplete", error=f"{type(exc).__name__}: {exc}"[:1000])
                 finally:
                     with self.lock:
                         final = deepcopy(self.experiment)
+                        budget_exhausted = deadline is not None and time.monotonic() >= deadline
                         if cancellation.is_set() and not final.get("cleanup_unknown"):
                             final["status"] = "cancelled"
+                        elif budget_exhausted:
+                            final["status"] = "incomplete"
                         elif completed_result is not None:
                             final.update(status="completed", comparison_result=completed_result, comparison_unchanged=True)
                         if final["status"] != "completed":
@@ -894,11 +987,23 @@ class ReadingDesk:
                             "input_sha256": input_sha, "runtime_manifest_sha256": runtime_sha,
                             "guards": guards, "child_reports": report_pins, "result": final,
                             "notice": "Two guest-reported JSON observations; not a trusted oracle, equivalence, causal proof or validation of an AI explanation."}
+                        if searching:
+                            reason = ("cancelled" if final["status"] == "cancelled" else "incomplete"
+                                if final.get("cleanup_unknown") else "budget" if budget_exhausted
+                                else "different" if final["status"] == "completed" and completed_result == "different"
+                                else "exhausted" if final["status"] == "completed" else "incomplete")
+                            final["search"]["stop_reason"] = reason
+                            receipt = {"schema_version": 1, "kind": "forge8.paired_input_search", "target": target,
+                                "plan": search_plan, "cases": cases, "retained_sha256": retained,
+                                "runtime_manifest_sha256": runtime_sha, "result": final,
+                                "notice": "Bounded guest-reported differences only; no equivalence, causal proof or model validation."}
                         try:
                             _write_json(directory / "comparison-experiment.json", receipt)
                         except Exception as exc:
                             final.update(status="incomplete", comparison_result="unavailable", comparison_unchanged=False,
                                 error=f"Paired receipt could not be written: {type(exc).__name__}"[:1000])
+                            if searching:
+                                final["search"]["stop_reason"] = "incomplete"
                         # One publication boundary: no completed result before its
                         # receipt; cancellation accepted before this lock wins.
                         self.experiment = final
@@ -909,6 +1014,8 @@ class ReadingDesk:
             except RuntimeError as exc:
                 self.experiment_worker = None
                 self.experiment.update(status="incomplete", error=f"Trial worker did not start: {exc}"[:1000])
+                if searching:
+                    self.experiment["search"]["stop_reason"] = "incomplete"
             return {"id": identifier}
 
     def experiment_status(self) -> dict:
@@ -916,7 +1023,7 @@ class ReadingDesk:
             value = dict(self.experiment)
             if "module_set" in value:
                 value["module_set"] = deepcopy(value["module_set"])
-            for key in ("before", "observations"):
+            for key in ("before", "observations", "search"):
                 if key in value:
                     value[key] = deepcopy(value[key])
             if value["status"] in {"running", "cancelling"}:
@@ -1510,7 +1617,7 @@ def make_server(desk: ReadingDesk) -> tuple[ThreadingHTTPServer, str]:
                     if self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding"):
                         raise ValueError("expected a bounded JSON request")
                     sizes = self.headers.get_all("Content-Length")
-                    limit = 36 * 1024 if parsed.path == "/api/experiment/run" else 16_384
+                    limit = 36 * 1024 if parsed.path in {"/api/experiment/run", "/api/experiment/prepare"} else 16_384
                     if sizes is None or len(sizes) != 1 or not sizes[0].isdigit() or not 1 <= int(sizes[0]) <= limit:
                         raise ValueError("invalid request size")
                     self.connection.settimeout(5)

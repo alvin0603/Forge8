@@ -107,6 +107,7 @@ footer { padding: 10px 20px; color: #83948c; font-size: 10px; text-align: right;
 .experiment-baseline-grid > * { min-width: 0; }#experiment-baseline-controls p { overflow-wrap: anywhere; }
 .experiment-pair-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
 .experiment-pair-results > section { min-width: 0; }.experiment-pair-results p { overflow-wrap: anywhere; }
+#experiment-search-plan { margin-top: 10px; }#experiment-search-inputs { padding-left: 24px; }#experiment-search-inputs li { overflow-wrap: anywhere; margin-top: 8px; }#experiment-search-current { padding: 8px; border-left: 3px solid #bd8b2c; background: #fff0cd; }#experiment-search-note, #experiment-search-current p { overflow-wrap: anywhere; }
 /* The heading owns the top padding, so scrolled content cannot show above it. */
 .experiment-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 0 6px; background: #fcfaf4; }.experiment-heading h3 { font-size: 14px; }.experiment-heading button { font-size: 11px; padding: 4px 8px; }
 .experiment-identity { margin: 8px 0; font: 11px/1.6 Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }.experiment-notice { margin-bottom: 10px; color: #705524; }

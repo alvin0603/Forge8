@@ -182,6 +182,320 @@ class PairedExperimentTests(DeskFixture):
         self.process_guard.assert_not_called()
         self.assertIsNone(self.desk.experiment_worker)
 
+    def search_payload(self, raw=' {"args":[9],"kwargs":{}}\n'):
+        preview = self.desk.prepare_experiment({**self.target(), "search": "nearby-v1", "input_text": raw})
+        payload = self.payload()
+        payload.update(search="nearby-v1", input_text=raw, search_plan_sha256=preview["search_plan"]["sha256"])
+        return payload, preview["search_plan"]
+
+    def test_search_preview_is_exact_static_and_does_not_change_trial_state(self):
+        original = deepcopy(self.desk.experiment_status())
+        paths = set(self.desk.root.iterdir())
+        raw = ' {"args":[9007199254740993,"中文"],"kwargs":{}}\n'
+        payload, plan = self.search_payload(raw)
+        self.assertEqual(plan, experiments.prepare_input_search(raw.encode("utf-8")))
+        self.assertEqual(plan["inputs"][0]["input_text"], raw)
+        self.assertEqual(plan["seed_input_text"], raw)
+        self.assertEqual(plan["max_initializations"], 2 * len(plan["inputs"]))
+        self.assertLessEqual(len(plan["inputs"]), 12)
+        self.assertEqual(plan["max_seconds"], 120)
+        self.assertNotIn("search_plan", self.desk.prepare_experiment(self.target()))
+        self.assertEqual(self.desk.experiment_status(), original)
+        self.assertEqual(set(self.desk.root.iterdir()), paths)
+        self.assertEqual(payload["search_plan_sha256"], plan["sha256"])
+        self.assert_no_execution()
+
+    def test_search_rechecks_plan_and_explicit_consent_before_creating_worker(self):
+        payload, plan = self.search_payload()
+        invalid = [{**payload, "search_plan_sha256": "0" * 64},
+            {**payload, "search_plan_sha256": True}, {**payload, "search": True},
+            {**payload, "search": "unknown"}, {**payload, "input_text": '{"args":[8],"kwargs":{}}'},
+            {**payload, "inputs": plan["inputs"]}, {**payload, "allow_execution": 1},
+            {key: value for key, value in payload.items() if key != "search_plan_sha256"},
+            {key: value for key, value in payload.items() if key != "search"}]
+        paths = set(self.desk.root.iterdir())
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                self.desk.start_experiment(request)
+        with patch.object(experiments, "prepare_input_search", return_value={**plan, "sha256": "a" * 64}):
+            with self.assertRaisesRegex(ValueError, "plan changed"):
+                self.desk.start_experiment(payload)
+        self.assertEqual(set(self.desk.root.iterdir()), paths)
+        self.assert_no_execution()
+
+    def test_search_stops_at_first_difference_and_binds_prior_pairs(self):
+        payload, plan = self.search_payload()
+        saved = deepcopy((self.desk.job, self.desk.history(), self.desk.project))
+        seen = []
+
+        def run(_runtime, source, entry, inputs, destination, **options):
+            index = int(destination.parent.name[-2:])
+            seen.append((index, destination.name))
+            self.assertEqual(inputs.read_bytes(), plan["inputs"][index - 1]["input_text"].encode("utf-8"))
+            self.assertEqual(self.desk.experiment_status()["input_text"], payload["input_text"])
+            self.assertEqual(self.desk.experiment_status()["search"]["case_index"], index)
+            self.assertFalse(options["cancel_requested"]())
+            value = index == 2 and destination.name == "after"
+            return self.write_report(source, entry, inputs, destination, {"return": value})
+
+        identifier, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 4)
+        self.assertEqual(seen, [(1, "before"), (1, "after"), (2, "before"), (2, "after")])
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["comparison_result"], "different")
+        self.assertEqual(state["search"], {"strategy": "nearby-v1", "plan_sha256": plan["sha256"],
+            "total": len(plan["inputs"]), "completed": 2, "case_index": 2,
+            "input_text": plan["inputs"][1]["input_text"], "stop_reason": "different"})
+        self.assertEqual(state["input_text"], payload["input_text"])
+        self.assertEqual(json.loads(state["observations"]["before"]["result_text"]), {"return": False})
+        self.assertEqual(json.loads(state["observations"]["after"]["result_text"]), {"return": True})
+        directory = self.desk.root / identifier
+        receipt = json.loads((directory / "comparison-experiment.json").read_bytes())
+        self.assertEqual(receipt["kind"], "forge8.paired_input_search")
+        self.assertEqual(receipt["plan"], plan)
+        self.assertEqual(receipt["result"], state)
+        self.assertEqual(len(receipt["cases"]), 2)
+        self.assertEqual(len(receipt["retained_sha256"]), 9)
+        for name, digest in receipt["retained_sha256"].items():
+            self.assertEqual(sha((directory / name).read_bytes()), digest)
+        for row in receipt["cases"]:
+            child = directory / f"case-{row['index']:02}" / "comparison-experiment.json"
+            self.assertEqual(sha(child.read_bytes()), row["receipt_sha256"])
+            pair = json.loads(child.read_bytes())
+            self.assertEqual(pair["kind"], "forge8.paired_experiment")
+            self.assertEqual(pair["input_sha256"], row["input_sha256"])
+            self.assertEqual(pair["child_reports"], row["child_reports"])
+            self.assertNotIn("search", pair["result"])
+        state["search"]["input_text"] = "caller mutation"
+        self.assertEqual(self.desk.experiment_status()["search"]["input_text"], plan["inputs"][1]["input_text"])
+        self.assertEqual((self.desk.job, self.desk.history(), self.desk.project), saved)
+
+    def test_search_exhaustion_and_seed_only_plan_count_only_completed_pairs(self):
+        for raw in ('{"args":[false],"kwargs":{}}', '{"args":[],"kwargs":{}}'):
+            with self.subTest(raw=raw):
+                payload, plan = self.search_payload(raw)
+
+                def run(_runtime, source, entry, inputs, destination, **_options):
+                    return self.write_report(source, entry, inputs, destination, {"return": 9007199254740993})
+
+                identifier, state, count = self.run_pair(run, payload)
+                self.assertEqual(count, 2 * len(plan["inputs"]))
+                self.assertEqual(state["search"]["completed"], len(plan["inputs"]))
+                self.assertEqual(state["search"]["stop_reason"], "exhausted")
+                self.assertEqual(state["comparison_result"], "same")
+                receipt = json.loads((self.desk.root / identifier / "comparison-experiment.json").read_bytes())
+                self.assertIn("no equivalence", receipt["notice"])
+                self.assertEqual(receipt["result"], state)
+
+    def test_search_between_case_cancellation_keeps_one_busy_lease_and_no_next_guest(self):
+        payload, _ = self.search_payload()
+        original_write = experiments._write_json
+
+        def run(_runtime, source, entry, inputs, destination, **_options):
+            return self.write_report(source, entry, inputs, destination, {"return": 7})
+
+        def write(path, record):
+            original_write(path, record)
+            if path.parent.name == "case-01":
+                for action in (lambda: self.desk.start_experiment(payload), self.desk.refresh):
+                    with self.assertRaises(ValueError):
+                        action()
+                self.assertEqual(self.desk.cancel_experiment({"id": self.desk.experiment["id"]})["status"], "cancelling")
+
+        with patch.object(experiments, "_write_json", side_effect=write):
+            _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 2)
+        self.assertEqual(state["status"], "cancelled")
+        self.assertEqual(state["search"]["completed"], 1)
+        self.assertEqual(state["search"]["stop_reason"], "cancelled")
+        self.assertEqual(state["comparison_result"], "unavailable")
+        self.assertFalse(self.desk._busy())
+
+    def test_search_budget_during_first_guest_is_not_user_cancellation(self):
+        payload, _ = self.search_payload()
+        clock = [1.0]
+
+        def run(_runtime, source, entry, inputs, destination, **options):
+            report = self.write_report(source, entry, inputs, destination, {"return": 7})
+            clock[0] = 122.0
+            self.assertTrue(options["cancel_requested"]())
+            return report
+
+        with patch.object(desk_module.time, "monotonic", side_effect=lambda: clock[0]):
+            _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 1)
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual(state["search"]["stop_reason"], "budget")
+        self.assertEqual(state["search"]["completed"], 0)
+        self.assertEqual(state["comparison_result"], "unavailable")
+        self.assertFalse(self.desk.experiment_cancel_event.is_set())
+
+    def test_search_cancel_or_budget_before_final_publication_suppresses_found_difference(self):
+        for mode in ("cancel", "budget"):
+            with self.subTest(mode=mode):
+                payload, _ = self.search_payload()
+                clock = [1.0]
+                original_file = experiments._file
+
+                def run(_runtime, source, entry, inputs, destination, **_options):
+                    return self.write_report(source, entry, inputs, destination, {"return": destination.name})
+
+                def read(path, *args, **kwargs):
+                    raw = original_file(path, *args, **kwargs)
+                    if path == self.desk.root / self.desk.experiment["id"] / "arguments.json":
+                        if mode == "budget":
+                            clock[0] = 122.0
+                        else:
+                            self.desk.cancel_experiment({"id": self.desk.experiment["id"]})
+                    return raw
+
+                with patch.object(experiments, "_file", side_effect=read), \
+                        patch.object(desk_module.time, "monotonic", side_effect=lambda: clock[0]):
+                    _, state, count = self.run_pair(run, payload)
+                self.assertEqual(count, 2)
+                self.assertEqual(state["search"]["completed"], 1)
+                self.assertEqual(state["search"]["stop_reason"], "cancelled" if mode == "cancel" else "budget")
+                self.assertEqual(state["status"], "cancelled" if mode == "cancel" else "incomplete")
+                self.assertEqual(state["comparison_result"], "unavailable")
+                self.assertFalse(state["comparison_unchanged"])
+
+    def test_search_deadline_status_and_reason_use_one_publication_sample(self):
+        payload, _ = self.search_payload()
+        original_file = experiments._file
+        receipt_reads, final_samples = [], []
+
+        def clock():
+            if len(receipt_reads) < 2:
+                return 1.0
+            # The first finalization sample is just before the 121.0 deadline;
+            # elapsed-time formatting crosses it. The verdict must stay coherent.
+            final_samples.append(True)
+            return 120.5 if len(final_samples) == 1 else 121.5
+
+        def read(path, *args, **kwargs):
+            value = original_file(path, *args, **kwargs)
+            if path.parent.name == "case-01" and path.name == "comparison-experiment.json":
+                receipt_reads.append(path)
+            return value
+
+        def run(_runtime, source, entry, inputs, destination, **_options):
+            return self.write_report(source, entry, inputs, destination, {"return": destination.name})
+
+        with patch.object(experiments, "_file", side_effect=read), \
+                patch.object(desk_module.time, "monotonic", side_effect=clock):
+            identifier, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 2)
+        self.assertGreaterEqual(len(final_samples), 2)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["search"]["stop_reason"], "different")
+        receipt = json.loads((self.desk.root / identifier / "comparison-experiment.json").read_bytes())
+        self.assertEqual(receipt["result"], state)
+
+    def test_search_rechecks_earlier_input_report_and_receipt_after_later_pair(self):
+        for relative in ("arguments.json", "before/experiment.json", "comparison-experiment.json"):
+            with self.subTest(relative=relative):
+                payload, _ = self.search_payload()
+
+                def run(_runtime, source, entry, inputs, destination, **_options):
+                    value = destination.parent.name == "case-02" and destination.name == "after"
+                    report = self.write_report(source, entry, inputs, destination, {"return": value})
+                    if value:
+                        path = destination.parent.parent / "case-01" / relative
+                        path.write_bytes(path.read_bytes() + b" ")
+                    return report
+
+                _, state, count = self.run_pair(run, payload)
+                self.assertEqual(count, 4)
+                self.assertEqual(state["status"], "incomplete")
+                self.assertEqual(state["search"]["stop_reason"], "incomplete")
+                self.assertEqual(state["comparison_result"], "unavailable")
+
+    def test_search_source_or_runtime_drift_between_cases_stops_before_next_guest(self):
+        original_write = experiments._write_json
+        for defect in ("source", "runtime"):
+            with self.subTest(defect=defect):
+                self.live.write_bytes(self.code)
+                (self.runtime / "runtime.json").write_bytes(b"{}")
+                self.desk.refresh(mode="changes")
+                payload, _ = self.search_payload()
+
+                def run(_runtime, source, entry, inputs, destination, **_options):
+                    return self.write_report(source, entry, inputs, destination, {"return": 7})
+
+                def write(path, record):
+                    original_write(path, record)
+                    if path.parent.name == "case-01":
+                        changed = self.live if defect == "source" else self.runtime / "runtime.json"
+                        changed.write_bytes(changed.read_bytes() + b" ")
+
+                with patch.object(experiments, "_write_json", side_effect=write):
+                    _, state, count = self.run_pair(run, payload)
+                self.assertEqual(count, 2)
+                self.assertEqual(state["status"], "incomplete")
+                self.assertEqual(state["search"]["stop_reason"], "incomplete")
+                self.assertEqual(state["comparison_result"], "unavailable")
+
+    def test_search_cross_case_reported_runtime_change_cannot_become_a_difference(self):
+        payload, _ = self.search_payload()
+
+        def run(_runtime, source, entry, inputs, destination, **_options):
+            later = destination.parent.name == "case-02"
+            identity = {**self.runtime_identity, "python": "other"} if later else self.runtime_identity
+            return self.write_report(source, entry, inputs, destination,
+                {"return": later and destination.name == "after"}, runtime=identity)
+
+        _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 4)
+        self.assertEqual(state["search"]["stop_reason"], "incomplete")
+        self.assertEqual(state["comparison_result"], "unavailable")
+
+    def test_search_unavailable_report_stops_instead_of_counting_a_same_pair(self):
+        payload, _ = self.search_payload()
+
+        def run(_runtime, source, entry, inputs, destination, **_options):
+            return self.write_report(source, entry, inputs, destination, None)
+
+        _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 1)
+        self.assertEqual(state["status"], "incomplete")
+        self.assertEqual(state["search"]["stop_reason"], "incomplete")
+        self.assertEqual(state["search"]["completed"], 0)
+
+    def test_search_cleanup_unknown_latches_and_does_not_advance(self):
+        payload, _ = self.search_payload()
+
+        def run(*_args, **_options):
+            self.desk.experiment_cancel_event.set()
+            raise CheckCleanupError(123)
+
+        _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 1)
+        self.assertTrue(state["cleanup_unknown"])
+        self.assertTrue(self.desk._busy())
+        self.assertEqual(state["search"]["stop_reason"], "incomplete")
+        self.assertEqual(state["comparison_result"], "unavailable")
+        with self.assertRaises(ValueError):
+            self.desk.start_experiment(payload)
+
+    def test_search_pair_receipt_failure_never_starts_another_case(self):
+        payload, _ = self.search_payload()
+        original_write = experiments._write_json
+
+        def run(_runtime, source, entry, inputs, destination, **_options):
+            return self.write_report(source, entry, inputs, destination, {"return": 7})
+
+        def write(path, record):
+            if path.parent.name == "case-01":
+                raise OSError("owned search receipt failure")
+            original_write(path, record)
+
+        with patch.object(experiments, "_write_json", side_effect=write):
+            _, state, count = self.run_pair(run, payload)
+        self.assertEqual(count, 2)
+        self.assertEqual(state["search"]["completed"], 0)
+        self.assertEqual(state["search"]["stop_reason"], "incomplete")
+        self.assertEqual(state["comparison_result"], "unavailable")
+
     def test_prepare_binds_both_complete_raw_modules_without_execution(self):
         request = self.target()
         saved = deepcopy((self.desk.project, self.desk.contents, self.desk.job))

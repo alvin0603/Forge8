@@ -32,6 +32,9 @@ a paired-trial action: the same raw JSON is sent to two separate full-module
 WASI guests, HEAD then current. This does not require the three AI question roles
 below and does not execute their fixed caller. [Paired execution consent, runtime
 setup and limits](isolated-experiments.md#compare-head-and-current-with-the-same-input).
+If your first input produces the same result, the panel can
+[preview and try nearby inputs](isolated-experiments.md#find-an-input-that-exposes-a-change)
+to look for a differing return or exception. This is independent of the model.
 
 The comparison is local **HEAD versus currently saved filesystem bytes**.
 It is not a staged/index diff and cannot see unsaved editor buffers. “Added” means

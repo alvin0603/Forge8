@@ -682,8 +682,9 @@ HEAD/current comparison. The user selects an after-side synchronous top-level Py
 function, confirms both complete modules and source hashes, and explicitly authorizes
 one initialization plus one call **per version**. The host only parses source; two
 sequential, separate CPython/WASI guests execute it. The same raw JSON input is supplied
-to both. This initial mode has no project module-set imports, function extraction,
-dependency installation, automatic input search or execution of the fixed caller.
+to both. This mode has no project module-set imports, function extraction,
+dependency installation or execution of the fixed caller. Optional bounded input
+search requires its own preview and explicit consent as described below.
 
 The existing WASI runtime verification, host process limits, guest memory/output/time
 bounds and cancellation remain unchanged; see [isolated trials](isolated-experiments.md).
@@ -708,6 +709,29 @@ characters per envelope. The browser receives result text, not numeric objects.
 Guest code can interfere with its own reporting protocol. Agreement is not equivalence,
 purity or validation of an AI explanation; a difference need not be caused by the edit
 (for example, time/randomness can differ). This is deliberately **not a trusted oracle**.
+
+### Explicit nearby-input search
+
+The paired panel can preview a fixed `nearby-v1` plan without execution. Run
+admission recomputes the plan from the exact raw seed and checks its SHA-256
+against the user's submitted preview identity. At most 12 inputs (including the
+seed) authorize at most 24 complete-module initializations/calls. Scalar changes
+are deterministic and bounded; they do not inspect source or infer valid domains.
+The 120-second cooperative budget includes source checks and guest calls; cleanup
+may extend it. Per-guest limits and full runtime verification remain unchanged.
+
+One existing worker slot and cancellation event own the entire sequential search.
+Every pair retains its own input and child reports. The parent receipt binds the
+plan and ordered pair receipts; all retained input/report/receipt hashes are
+checked again before publication. Source/HEAD and runtime checks also span cases.
+The first differing pair stops further calls. Failure, cancellation, missing
+results, expired budget or uncertain cleanup cannot publish a completed search
+verdict. Accepted cancellation before the final receipt/publication lock wins.
+
+The seed and current case input are separate immutable records in the display.
+Reload and uncertain transport recovery query state only; they never resubmit a
+search. Results remain untrusted guest-reported returns/exceptions, not argument
+mutation observations, valid-domain proofs, program equivalence or AI validation.
 
 ## One explicitly pinned ordinary trial
 

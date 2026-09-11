@@ -286,6 +286,46 @@ exact recorded JSON while reading the results. It does not follow the newer draf
 parse or round its numbers, or trigger execution. Worker/WASI completion labels
 describe the execution environment, not whether the function is correct.
 
+### Find an input that exposes a change
+
+In the same paired panel, enable nearby-input search after entering a seed. The
+first button click **only previews** the complete input list. A second click
+authorizes the displayed plan. Editing the seed or changing the target requires
+a new preview. This needs the optional WASI runtime, not a model or existing tests.
+The preview opens in full before consent and folds away during execution to leave
+room for results; you can reopen it without running anything.
+
+For example, two versions of a configuration helper may both return `5` for a
+timeout of `5`, while disagreeing on `0`: `options.get("timeout") or 30` substitutes
+`30`, but `options.get("timeout", 30)` preserves `0`. A nearby-input search can
+try that boundary without you manually guessing and submitting each pair.
+
+`nearby-v1` includes your original input and at most 11 variants. Each variant
+replaces one scalar value with a common boundary: zero or adjacent integers,
+empty/whitespace strings, a flipped boolean, or a small replacement for null.
+It visits arguments then keyword arguments in their original order, interleaving
+replacements across at most 32 scalar locations. It does not combine changes,
+infer valid input contracts, alter containers or minimize a discovered example.
+The preview identifies when candidates were limited; it is not exhaustive.
+
+After consent, one cancellable job runs fresh HEAD/current guests sequentially.
+It stops at the first differing reported return or exception, with at most 24
+whole-module initializations and a 120-second cooperative search budget, plus
+cleanup. Integrity failures stop the search; it does not retry or skip failures.
+The found input appears beside both results. Your original seed and editable
+draft remain separate; neither is replaced with the generated input.
+
+No difference means **no difference among the inputs tried**, not equivalence.
+Generated inputs can be outside your function's valid domain, and time/randomness
+can produce differences unrelated to an edit. Only guest-reported returns and
+exceptions are compared: changes to argument objects, external effects and stdout
+are not compared. A module-initialization or serialization exception does not
+establish that the selected function completed. Nothing is sent back to the model.
+
+Reload retrieves the same job without replaying it. Private run state retains
+the exact plan and per-input paired reports; it is not a public test suite or a
+new differential-testing algorithm.
+
 ## Submit exactly one call
 
 From the Forge8 repository, after substituting your installed runtime path:

@@ -79,7 +79,8 @@ See [platform support](docs/PLATFORMS.md) and [measured limits](docs/VALIDATION.
   files. These are static candidates, not a resolved call graph.
 - Explicitly try small Python functions in a separate WASI guest, inspect reported
   results and optional line visits, or pin one input/result beside the next trial.
-- Compare local HEAD with saved changes, including optional same-input guest runs.
+- Compare local HEAD with saved changes. Preview and try nearby inputs to find
+  one that exposes a different return or exception, without writing a test suite.
   Separate Python repair can propose a patch checked by existing tests.
 
 Trials require [optional setup and consent](docs/isolated-experiments.md); nothing

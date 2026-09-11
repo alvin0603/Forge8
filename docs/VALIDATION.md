@@ -30,6 +30,45 @@ not published because they may contain local source, paths or credentials.
 The observations above are maintainer-reported, not independently certified.
 CI checks application logic, not GPU compatibility or model-answer quality.
 
+## Nearby-input search
+
+Three declared development edits were tried with complete modules in the real
+WASI runtime. Each original input returned the same result in HEAD and current;
+the same fixed input generator then found these differences on both native hosts:
+
+| Edit | Input that exposed it | HEAD / current return | Windows | WSL |
+| --- | --- | --- | ---: | ---: |
+| Fix swapped clamp bounds | `clamp(1, 0, 10)` | `0` / `1` | 5.8 s | 25.7 s |
+| Change duplicate records from last-wins to first-wins | Two A records with values 0, then 1 | A=1 / A=0 | 9.5 s | 40.2 s |
+| Remove CPython dedent's whitespace-only normalization | One space | `""` / `" "` | 8.1 s | 37.9 s |
+
+Times include the search's checks and all guest calls, not just the final
+function. These are single observations on the reference laptop, not percentiles
+or general platform comparisons. The changes were made for development acceptance;
+they are not claimed upstream regressions or a held-out accuracy benchmark.
+
+The clamp search stopped after two input pairs; merge and dedent after three.
+An unchanged identity function exhausted its three inputs without a difference.
+Each native host completed 22 guests across those four searches, then cancelled
+one running worker without starting its partner. All started workers exited;
+source, runtime and report integrity checks passed. No model was called, and the
+target source was never executed on the host.
+
+Real Edge journeys checked explicit preview/consent, separate original/found
+inputs, preserved question drafts, GET-only reload and 1440/390-pixel layouts.
+These journeys did not test preservation of populated AI history or selections;
+those are covered by mocked UI regressions. A later presentation-only check
+verified that the full preview opens before consent and can be reopened after
+folding away during execution.
+
+The complete local regression run passed 1,396 Python tests on both natives
+(WSL: 12 skips; Windows Python 3.10: 35 skips). A subsequently added deadline
+boundary test passed in the 36-test paired suite on both. All seven Node harnesses
+and 21 Windows setup assertions passed. Skips are not successful executions.
+
+This establishes a bounded working feature, not a new differential-testing
+algorithm, general bug-finding rate or improvement in the model's explanations.
+
 ## Model quality and waiting time
 
 The public desk reader is Qwen3.5-9B Q4_K_M with llama.cpp b10621, an 8K context

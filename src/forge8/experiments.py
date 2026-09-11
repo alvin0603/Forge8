@@ -19,6 +19,7 @@ import sys
 import time
 import tokenize
 import zipfile
+from copy import deepcopy
 from typing import Callable
 
 from ._experiment_worker import ENGINE_OPTIONS, OUTPUT_BYTES
@@ -271,6 +272,88 @@ def prepare_inputs(raw_input: bytes) -> dict:
             or not all(isinstance(key, str) for key in payload["kwargs"])):
         raise ValueError('input must be exactly {"args": [...], "kwargs": {...}}')
     return payload
+
+
+def prepare_input_search(raw_input: bytes) -> dict:
+    """Preview a small, deterministic set of single-scalar input replacements.
+
+    No source inspection, type inference or execution. Traverse args then kwargs
+    in their original order, and round-robin across at most 32 scalar locations.
+    The exact seed is retained; generated dictionaries keep insertion order too.
+    """
+    seed = prepare_inputs(raw_input)
+    seed_text = raw_input.decode("utf-8")
+
+    def encoded(value):
+        return json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+
+    pending = [(("kwargs", key), value) for key, value in reversed(list(seed["kwargs"].items()))]
+    pending.extend((("args", i), seed["args"][i]) for i in reversed(range(len(seed["args"]))))
+    locations = []
+    limited = False
+    while pending:
+        path, value = pending.pop()
+        if type(value) is dict:
+            pending.extend((path + (key,), part) for key, part in reversed(list(value.items())))
+        elif type(value) is list:
+            pending.extend((path + (i,), value[i]) for i in reversed(range(len(value))))
+        else:
+            if len(locations) == 32:
+                limited = True
+                break
+            if type(value) is bool:
+                replacements = [not value]
+            elif type(value) is int:
+                replacements = [0, 1, -1, value - 1, value + 1]
+            elif type(value) is float:
+                replacements = [part for part in (0.0, 1.0, -1.0, value - 1.0, value + 1.0)
+                                if math.isfinite(part)]
+            elif type(value) is str:
+                replacements = ["", " ", "\t", value.strip(), value[:-1]]
+            else:  # JSON null has no inferred application type.
+                replacements = [False, 0, ""]
+            distinct, seen_values = [], {encoded(value)}
+            for part in replacements:
+                try:
+                    key = encoded(part)
+                except ValueError:  # An adjacent integer may exceed the native digit cap.
+                    limited = True
+                    continue
+                if key not in seen_values:
+                    distinct.append(part)
+                    seen_values.add(key)
+            locations.append((path, distinct))
+
+    inputs = [{"input_text": seed_text, "location": "seed"}]
+    seen = {encoded(seed)}
+    for replacement_index in range(5):
+        for location_index, (path, replacements) in enumerate(locations, 1):
+            if replacement_index >= len(replacements):
+                continue
+            candidate = deepcopy(seed)
+            parent = candidate
+            for component in path[:-1]:
+                parent = parent[component]
+            parent[path[-1]] = replacements[replacement_index]
+            text = encoded(candidate)
+            if text in seen:
+                continue
+            if len(text.encode("utf-8")) > MAX_INPUT_BYTES:
+                limited = True
+                continue
+            if len(inputs) == 12:
+                limited = True
+                break
+            prepare_inputs(text.encode("utf-8"))
+            pointer = "/" + "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in path)
+            location = pointer if len(pointer) <= 256 and pointer.isprintable() else f"scalar {location_index}"
+            inputs.append({"input_text": text, "location": location})
+            seen.add(text)
+        if len(inputs) == 12 and limited:
+            break
+    plan = {"strategy": "nearby-v1", "seed_input_text": seed_text, "inputs": inputs,
+            "max_initializations": 2 * len(inputs), "max_seconds": 120, "limited": limited}
+    return {**plan, "sha256": hashlib.sha256(encoded(plan).encode("ascii")).hexdigest()}
 
 
 def prepare_call_inputs(code: bytes, entry: str, start: int, end: int) -> dict:

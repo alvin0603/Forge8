@@ -1924,6 +1924,173 @@ async function checkPairedExperiments(context, nodes) {
   assert.equal(run("state.experiment.target"), null); assert.equal(count("/api/experiment/run"), 2);
   context.fetch = originalFetch;
 }
+async function checkPairedInputSearch(context, nodes) {
+  const run = code => vm.runInContext(code, context), originalFetch = context.fetch, requests = [];
+  const reply = value => ({ok: true, json: async () => value});
+  const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
+  const files = [{id: "0", path: "before/search.py", lines: 2}, {id: "1", path: "after/search.py", lines: 2}];
+  const comparison = {head: "d".repeat(40), original_snapshot_sha256: "e".repeat(64),
+    catalogue: {schema_version: 1, kind: "source_change_catalogue", semantics_verified: false, files: []}};
+  const target = {file: "1", path: files[1].path, version: "search-v1", entry: "echo", source_sha256: "a".repeat(64), source_bytes: 40,
+    mode: "head_current", head: comparison.head, current_snapshot_sha256: comparison.original_snapshot_sha256,
+    before: {file: "0", path: files[0].path, source_sha256: "b".repeat(64), source_bytes: 42}};
+  const input = ' {"args":[9007199254740993],"kwargs":{"text":"<script>你好</script>"}}\n';
+  const inputs = [input, input.replace("9007199254740993", "9007199254740992"), input.replace("9007199254740993", "9007199254740994")];
+  const plan = {strategy: "nearby-v1", seed_input_text: input, inputs: inputs.map((input_text, index) => ({input_text, location: index ? "/args/0" : "seed"})),
+    max_initializations: 6, max_seconds: 120, limited: true, sha256: "f".repeat(64)};
+  const observation = text => ({result_text: text, stdout: "", stderr: "", process_status: "passed", host_status: "exited",
+    source_unchanged: true, runtime_unchanged: true, complete: true, report_sha256: "c".repeat(64)});
+  const pending = id => ({...target, id, status: "running", phase: "checking", input_text: input, elapsed_seconds: 0,
+    observations: {}, comparison_result: "unavailable", comparison_rule: "canonical-json-v1", comparison_unchanged: false,
+    search: {strategy: "nearby-v1", plan_sha256: plan.sha256, total: 3, completed: 0, case_index: 1, input_text: input, stop_reason: null}});
+  let current = {id: null, status: "idle"}, prepareReply = () => reply({...target, search_plan: plan});
+  let runReply = () => {current = pending("search-one"); return reply({id: current.id});};
+  context.fetch = async (route, options) => {
+    const body = options.body === undefined ? undefined : JSON.parse(options.body);
+    requests.push({route, method: options.method, body});
+    if (route.startsWith("/api/source?")) return reply({file: "1", path: target.path, version: target.version,
+      lines: ["def echo(value):", "    return value"], outline: {status: "available", items: [{name: "echo", kind: "function", start_line: 1, definition_line: 1, end_line: 2, stub: false}]}});
+    if (route === "/api/experiment/prepare") return body.search ? prepareReply(body) : reply(target);
+    if (route === "/api/experiment/run") return runReply(body);
+    if (route === "/api/experiment/current") return reply(current);
+    if (route === "/api/experiment/cancel") {
+      assert.deepEqual(body, {id: current.id});
+      current = {...current, status: "cancelled", comparison_result: "unavailable", comparison_unchanged: false,
+        search: {...current.search, stop_reason: "cancelled"}};
+      return reply({status: "cancelled"});
+    }
+    throw Error(`unexpected input-search request: ${route}`);
+  };
+  const count = route => requests.filter(request => request.route === route).length;
+  const edit = value => {nodes["experiment-input"].value = value; nodes["experiment-input"].listeners.input();};
+  const toggle = value => {nodes["experiment-search-enabled"].checked = value; nodes["experiment-search-enabled"].listeners.change();};
+  context.searchProject = {name: "search", version: target.version, files, excluded: [], comparison, experiments_enabled: true};
+  context.searchPlan = plan; context.searchTarget = target;
+  run("showProject(searchProject,true)"); await run("openFile(state.project.files[1],state.project.version)");
+  await run("openExperiment(state.source.outline.items[0],state.source)");
+  nodes.question.value = "PRESERVE SEARCH QUESTION";
+  run('state.focus=[{file:"1",path:"after/search.py",start:1,end:2,role:"after"}];renderSelections()');
+  const reading = () => run("JSON.stringify({source:state.source,focus:state.focus,job:state.job,history:state.history,selected:state.selectedHistory})");
+  const preserved = reading(), answer = nodes.answer.textContent;
+  const unchanged = () => {assert.equal(reading(), preserved); assert.equal(nodes.question.value, "PRESERVE SEARCH QUESTION"); assert.equal(nodes.answer.textContent, answer);};
+  assert.equal(nodes["experiment-search-option"].hidden, false); assert.equal(nodes["experiment-search-enabled"].checked, false);
+  assert.equal(nodes["experiment-search-plan"].hidden, true); assert.equal(nodes["experiment-trace-option"].hidden, true);
+  edit(input); const initialPosts = requests.filter(request => request.method === "POST").length;
+  toggle(true); assert.equal(requests.filter(request => request.method === "POST").length, initialPosts);
+  assert.match(nodes["experiment-run"].textContent, /預覽.*不執行/);
+  await nodes["experiment-run"].listeners.click();
+  assert.equal(count("/api/experiment/run"), 0, "preview cannot execute either side");
+  assert.deepEqual(requests.at(-1).body, {mode: "head_current", file: "1", version: target.version, entry: "echo", search: "nearby-v1", input_text: input});
+  assert.equal(nodes["experiment-search-plan"].hidden, false);
+  assert.equal(nodes["experiment-search-plan"].open, true, "new previews show every input before consent");
+  assert.deepEqual(nodes["experiment-search-inputs"].querySelectorAll("pre").map(node => node.textContent), inputs);
+  assert.equal(nodes["experiment-search-inputs"].querySelectorAll("script").length, 0);
+  assert.match(nodes["experiment-run"].textContent, /3 組.*6 次完整模組.*120 秒/); unchanged();
+
+  // A -> B -> A edits and toggle ABA both require a new explicit preview.
+  edit(inputs[1]); edit(input); assert.equal(nodes["experiment-search-plan"].hidden, true);
+  await nodes["experiment-run"].listeners.click(); toggle(false); toggle(true);
+  assert.equal(nodes["experiment-search-plan"].hidden, true); assert.equal(count("/api/experiment/run"), 0);
+  await nodes["experiment-run"].listeners.click(); const beforeConsent = count("/api/experiment/prepare");
+  await nodes["experiment-run"].listeners.click();
+  assert.equal(count("/api/experiment/prepare"), beforeConsent); assert.equal(count("/api/experiment/run"), 1);
+  assert.deepEqual(requests.find(request => request.route === "/api/experiment/run").body,
+    {file: "1", version: target.version, entry: "echo", source_sha256: target.source_sha256, input_text: input, allow_execution: true,
+      mode: "head_current", head: target.head, before_sha256: target.before.source_sha256, search: "nearby-v1", search_plan_sha256: plan.sha256});
+  assert.equal(nodes["experiment-search-enabled"].disabled, true);
+  assert.equal(nodes["experiment-search-plan"].open, false, "submitted plans collapse to leave room for results");
+  assert.equal(nodes["experiment-submitted-input-text"].textContent, input);
+  current = {...current, phase: "after", elapsed_seconds: 2, observations: {before: observation('{"kind":"return","value":9007199254740992}')},
+    search: {...current.search, case_index: 2, completed: 1, input_text: inputs[1]}};
+  await run("pollExperiment()");
+  assert.equal(nodes["experiment-search-current-input"].textContent, inputs[1]);
+  assert.equal(nodes["experiment-after-result"].hidden, true); assert.match(nodes["experiment-pair-summary"].textContent, /第 2／3 組/);
+  const found = {...current, status: "completed", comparison_result: "different", comparison_unchanged: true,
+    observations: {...current.observations, after: observation('{"kind":"return","value":9007199254740993}')},
+    search: {...current.search, completed: 2, stop_reason: "different"}};
+  current = found; await run("pollExperiment()");
+  assert.match(nodes["experiment-pair-summary"].textContent, /找到不同回報.*第 2 組/);
+  assert.equal(nodes["experiment-search-plan"].open, false);
+  nodes["experiment-search-plan"].open = true;
+  await run("pollExperiment()");
+  assert.equal(nodes["experiment-search-plan"].open, true, "polling preserves explicitly reopened input lists");
+  assert.equal(nodes["experiment-search-current-input"].textContent, inputs[1]);
+  edit('{"args":["NEW DRAFT"],"kwargs":{}}'); await run("pollExperiment()");
+  assert.equal(nodes["experiment-input"].value, '{"args":["NEW DRAFT"],"kwargs":{}}');
+  assert.equal(nodes["experiment-submitted-input-text"].textContent, input); unchanged();
+
+  // Invalid cases cannot overwrite a known result or silently reinterpret the previewed plan.
+  current = {...found, search: {...found.search, input_text: inputs[2]}}; await run("pollExperiment()");
+  assert.equal(run("state.experiment.unknown"), true); assert.equal(nodes["experiment-search-current-input"].textContent, inputs[1]);
+  current = {...found, search: {...found.search, plan_sha256: "1".repeat(64)}}; await run("pollExperiment()");
+  assert.equal(run("state.experiment.unknown"), true);
+  current = found; await run("pollExperiment()"); assert.equal(run("state.experiment.unknown"), false);
+  context.searchJob = found;
+  assert.equal(run("validExperimentSearch(searchJob)"), true);
+  for (const change of [{total: 13}, {case_index: 0}, {completed: 0}, {stop_reason: "exhausted"}, {plan_sha256: plan.sha256 + "\n"}]) {
+    context.invalidSearch = {...found, search: {...found.search, ...change}};
+    assert.equal(run("validExperimentSearch(invalidSearch)"), false, JSON.stringify(change));
+  }
+  for (const change of [{max_seconds: 121}, {max_initializations: 5}, {sha256: plan.sha256 + "\n"}, {seed_input_text: inputs[1]},
+    {inputs: [...plan.inputs, plan.inputs[0]]}, {inputs: [{input_text: input, location: "x".repeat(257)}]},
+    {inputs: [{input_text: input, location: "\u202e"}]}]) {
+    context.invalidPlan = {...plan, ...change};
+    assert.equal(run("validExperimentSearchPlan(invalidPlan,searchPlan.seed_input_text)"), false, JSON.stringify(change));
+  }
+  current = {...found, comparison_result: "same", search: {...found.search, case_index: 3, completed: 3, input_text: inputs[2], stop_reason: "exhausted"}};
+  await run("pollExperiment()"); assert.match(nodes["experiment-pair-summary"].textContent, /已測 3 組.*不代表兩版等價/);
+  current = {...found, status: "incomplete", comparison_result: "unavailable", comparison_unchanged: false,
+    search: {...found.search, completed: 1, stop_reason: "budget"}};
+  await run("pollExperiment()"); assert.match(nodes["experiment-pair-summary"].textContent, /預算已到.*搜尋未完成/);
+  current = found; const beforeReload = requests.length;
+  run("resetExperiment()"); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.slice(beforeReload).map(request => [request.route, request.method]), [["/api/experiment/current", "GET"]]);
+  assert.equal(nodes["experiment-search-enabled"].checked, true); assert.equal(nodes["experiment-search-plan"].hidden, true);
+  assert.equal(nodes["experiment-search-current-input"].textContent, inputs[1]);
+  assert.match(nodes["experiment-run"].textContent, /預覽/); unchanged();
+
+  // Pending preview never publishes after a changed input, toggle, target, or refresh intent.
+  for (const mutation of ["input", "toggle", "target", "refresh", "close"]) {
+    run("state.experiment.target=searchTarget;state.experiment.visible=true;state.experiment.searchDraft=true;invalidateExperimentSearch(state.experiment);renderExperiment()");
+    edit(input); const held = deferred(); prepareReply = () => held.promise;
+    const preview = nodes["experiment-run"].listeners.click();
+    assert.equal(run("state.experiment.searchPending"), true);
+    if (mutation === "input") {edit(inputs[1]); edit(input);}
+    if (mutation === "toggle") {toggle(false); toggle(true);}
+    if (mutation === "target") run("state.experiment.target={...searchTarget}");
+    if (mutation === "refresh") run("state.refreshing=true");
+    if (mutation === "close") nodes["experiment-close"].listeners.click();
+    held.resolve(reply({...target, search_plan: plan})); await preview;
+    assert.equal(run("currentExperimentSearchPlan()"), null, mutation);
+    run("state.refreshing=false;state.experiment.visible=true;experimentControls()");
+  }
+  assert.equal(count("/api/experiment/run"), 1); unchanged();
+  prepareReply = () => reply({...target, search_plan: plan});
+  run("state.experiment.target=searchTarget;renderExperiment()"); edit(input); toggle(true);
+  await nodes["experiment-run"].listeners.click();
+  runReply = () => ({ok: false, status: 400, json: async () => ({error: "stale plan"})});
+  await nodes["experiment-run"].listeners.click();
+  assert.equal(run("state.experiment.unknown"), false); assert.equal(run("state.experiment.submission"), null);
+  assert.equal(nodes["experiment-search-plan"].hidden, true); assert.equal(count("/api/experiment/run"), 2);
+  assert.match(nodes["experiment-search-note"].textContent, /stale plan.*服務拒絕搜尋.*未重送/,
+    "restoring the previous completed job cannot hide the definite rejection");
+
+  // A lost/5xx reply plus old terminal/idle is not proof the search was rejected.
+  await nodes["experiment-run"].listeners.click();
+  runReply = () => ({ok: false, status: 503, json: async () => ({error: "reply unavailable"})});
+  await nodes["experiment-run"].listeners.click();
+  assert.equal(run("state.experiment.unknown"), true); assert.equal(nodes["experiment-run"].disabled, true);
+  await nodes["experiment-run"].listeners.click(); assert.equal(count("/api/experiment/run"), 3);
+  current = {id: null, status: "idle"}; await run("pollExperiment()");
+  assert.equal(run("state.experiment.unknown"), true); assert.equal(nodes["experiment-run"].disabled, true);
+  current = pending("search-recovered"); await run("pollExperiment()");
+  assert.equal(run("state.experiment.unknown"), false); assert.equal(run("state.experiment.job.id"), "search-recovered");
+  await nodes["experiment-cancel"].listeners.click();
+  assert.equal(count("/api/experiment/cancel"), 1); assert.equal(count("/api/experiment/run"), 3);
+  assert.match(nodes["experiment-pair-summary"].textContent, /搜尋已取消/); unchanged();
+  assert(requests.every(request => request.method === "GET" || ["/api/experiment/prepare", "/api/experiment/run", "/api/experiment/cancel"].includes(request.route)));
+  context.fetch = originalFetch;
+}
 async function checkExperimentModules(context, nodes) {
   const run = code => vm.runInContext(code, context), originalFetch = context.fetch, requests = [];
   const reply = value => ({ok: true, json: async () => value});
@@ -3242,7 +3409,7 @@ async function checkScenario(mode) {
   await checkDiscovery(context, nodes);
   await checkProjectQuestion(context, nodes);
   await checkUnverifiedProse(context, nodes);
-  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
+  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkPairedInputSearch(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
   assert.deepEqual(stored, [["forge8.read.token.v1", "test"]], "pasted logs must not enter browser storage");
 }
 (async () => {
