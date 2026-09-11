@@ -1,9 +1,12 @@
 # Usage
 
-Start with [installation](INSTALL.md) or the [中文 walkthrough](FIRST-RUN.zh-TW.md).
+Start with [installation](INSTALL.md).
 Commands below run from the checkout using your native installation. Where a
 command says `forge8`, substitute `.\.venv\Scripts\forge8.exe` on Windows or
 `./.venv-wsl/bin/forge8` in WSL if it is not on PATH.
+
+The current interface is Traditional Chinese. Action descriptions below are
+English explanations, not literal button labels.
 
 ## Open a project
 
@@ -30,10 +33,12 @@ Closing a browser tab does not stop the desk or release a resident model.
 
 ## Read selected code
 
-1. Open a file. Click a line number, then Shift-click the last line, or use
-   「延伸選取」. 「此檔案的定義」 helps jump to a Python function.
-2. Click 「加入選段」. Add relevant callers, constants, or helpers deliberately.
-3. Write a self-contained question and click 「解釋選取的程式碼」.
+1. Open a file. Click a line number, then Shift-click the last line, or use the
+   extend-selection control. The definition outline can select a Python function.
+2. Add the selection to the question. Include relevant callers, constants or
+   helpers deliberately.
+3. Write a self-contained question and submit it with the selected-code answer
+   button.
 
 Manual input is limited to three ranges, each at most 80 lines / 4,000 characters,
 with at most 240 lines total and a shared 9,000-character source JSON budget.
@@ -55,35 +60,35 @@ The existing search dropdown offers four different kinds of navigation:
 
 | Mode | What it finds |
 | --- | --- |
-| 文字出現位置 | Case-sensitive literal text occurrences. |
-| 同名定義 | Exact or suffix-qualified Python definition names. |
-| 關鍵字找定義 | All query words in a function's name, path, or own lexical source. |
-| 同名呼叫位置 | Individual Python calls with the exact terminal spelling. |
+| Text occurrences | Case-sensitive literal text occurrences. |
+| Definition names | Exact or suffix-qualified Python definition names. |
+| Keyword definitions | All query words in a function's name, path, or own lexical source. |
+| Same-spelling calls | Individual Python calls with the exact terminal spelling. |
 
 Keyword search splits underscores and camelCase; it does not translate or infer
 synonyms. Call search includes bare and attribute calls, not resolved receivers,
 aliases, or dynamic dispatch. It returns at most 40 rows and discloses skipped
 files, incomplete coverage, and truncation. No results is not proof of no callers.
 
-After adding Python source, 「查看名稱來源」 distinguishes lexical parameters,
-locals, enclosing scopes, and module declarations. Import links can follow
+After adding Python source, the name-source control distinguishes parameters,
+locals, enclosing scopes and module declarations. Import links can follow
 explicit source candidates in the retained project, including `src` layouts and
 re-exports. They do not import packages or establish runtime values. Viewing a
 candidate does not automatically add it to the next question.
 
-For a pasted traceback, expand 「貼上了 traceback？定位原碼」. This maps source
+For a pasted traceback, expand the traceback-location controls. This maps source
 locations without running a model or the failing program.
 
 ## Project questions and follow-ups
 
-「不知道從哪讀？AI 找原碼（較慢）」 exposes optional model-assisted discovery.
-「從專案找程式並回答」 selects candidates before reading them; it does not consume
-the entire project and can miss relevant code. Up to three model requests may
-take minutes; the default resident desk reuses its model. CLI equivalents are `forge8 locate PROJECT
---question "..."` and `forge8 ask PROJECT --question "..."`.
+The collapsed AI-discovery controls offer optional model-assisted source search.
+The project-answer action selects candidates before reading them; it does not
+consume the entire project and can miss relevant code. Up to three model requests
+may take minutes; the default resident desk reuses its model. CLI equivalents are
+`forge8 locate PROJECT --question "..."` and `forge8 ask PROJECT --question "..."`.
 
-Use 「閱讀紀錄、沿用原碼與匯出」 to revisit completed questions. Continuing reuses
-the selected question's exact source, not old answers or conversational memory.
+Expand the reading-history and export controls to revisit completed questions.
+Continuing reuses the selected question's exact source, not old answers or memory.
 Write the new question in full. When a genuine insufficient-source result offers
 recovery, inspect its source and deliberately add what is missing before asking
 again. Invalid source or incomplete cleanup cannot be bypassed this way.
@@ -111,7 +116,7 @@ Comparison requires matching source, entry, runtime, and trace policy. Editing
 the draft never changes the old result; cancelled or incomplete B is unavailable.
 Pinning does not run anything, and refreshing invalidates the baseline.
 
-「理解這次修改」 compares local HEAD with saved files, not the staging area or
+Change-reading mode compares local HEAD with saved files, not the staging area or
 unsaved edits. Its optional paired trial sends the same input to both versions
 in separate guests. Equal results do not prove equivalence; different results
 do not establish causality. See [change reading](change-reading.md).
@@ -138,8 +143,8 @@ starting a model or changing settings. Passing diagnostics is not GPU readiness
 or an answer-quality guarantee. Use `forge8 configure` to inspect saved native
 paths; see [installation](INSTALL.md) for creating or changing a deployment.
 
-The desk retains an idle model for 600 seconds by default. 「釋放模型」 releases it;
-`--idle-timeout 0` selects one-shot operation. If a send or cleanup status is
+The desk retains an idle model for 600 seconds by default. The release-model
+button stops it; `--idle-timeout 0` selects one-shot operation. If send or cleanup status is
 unknown, use the displayed status/recheck controls rather than resubmitting.
 Stop the service with Ctrl+C when finished. Source snapshots, questions, and
 reports remain private files in your configured state directory.

@@ -6,6 +6,9 @@
 - **Scope:** single-user native Windows and native WSL, using separate native
   Python and model-server processes
 
+This is the detailed boundary reference. Start with [usage](USAGE.md) for normal
+operation; read the relevant execution section before enabling repair or trials.
+
 Forge8 turns a bounded repository repair into a reviewable patch and evidence
 bundle, or one read-only code question into a citation-bound explanation bundle.
 The public surface includes deployment diagnostics, repair, source reading and
@@ -251,7 +254,7 @@ Search/navigation do not import, execute, submit a model request, change automat
 context, overwrite trial drafts/A or authorize a guest. Literal input carryover
 and execution remain distinct explicit actions with their existing refusals.
 
-An explicit **import-source** request recomputes that C1 selection and accepts only
+An explicit **import-source** request rechecks the name-source selection and accepts only
 one of its exact import declarations. The caller cannot supply an import target
 path or module name. A bounded, per-request AST cache follows physical project
 root/src paths, relative imports and explicit reexports using admitted retained
@@ -600,8 +603,8 @@ A `fix` delivery can say `VERIFIED` only when the terminal operator status is
 clean guarded replay, the delta is non-empty and allowlisted, source/candidate
 fingerprints agree, existing modified Python files pass the bounded source-
 preservation checks, the server/secret acceptance gate passes, and the trace seals
-and verifies. These checks prevent three observed regressions; they do not prove
-general merge quality. A passing check or verifier alone cannot override another
+and verifies. These checks do not prove general merge quality. A passing check
+or verifier alone cannot override another
 terminal failure.
 
 Ingress rejection, invalid or already-passing baseline, check infrastructure
@@ -745,11 +748,3 @@ When reporting a problem, include the platform, Python and Forge8 versions,
 command shape with secrets removed, terminal status, and the smallest safe trace
 or bundle excerpt that reproduces it. Never publish a private run directory
 unchanged.
-
-## Appendix: future sealed boundary
-
-A future “sealed” profile would require independently verified OS filesystem and
-network isolation for test processes, handle-anchored path traversal and
-publication, explicit Windows ACL creation/verification, stronger resource
-limits, and an external signature or trusted anchor for evidence. None of those
-future controls is implied by the current CLI or by a `VERIFIED` bundle.

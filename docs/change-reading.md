@@ -1,17 +1,11 @@
 # Understand a change at one caller
 
-Development preview: installed native Windows and WSL browser workflows passed
-owned UI checks; the first actual Windows Qwen answer did **not** pass complete
-application acceptance. It adds version-bound source reading, not a claim
-that the local model is more accurate or that every affected caller is known.
+Compare retained HEAD source with saved changes while keeping one current caller
+fixed. This narrows a reading question; it does not find every affected caller or
+verify the model's explanation. See [measured limits](VALIDATION.md).
 
-In that one source-reasoning case, the model found a valid old/new caller failure
-example but omitted reference line numbers and added an incorrect scope caveat.
-First visible text took about 68 seconds; the job finished in 81 seconds and
-released the GPU. The complete text remained explicitly unverified. No answer
-repair or retry was used; the planned missing-context check was not run.
-This is useful comparison tooling around an unreliable reader, not verified
-automated code review or evidence of broad reasoning quality.
+The interface is currently Traditional Chinese; the action descriptions here are
+English explanations, not literal button labels.
 
 ## Open the existing reading desk
 
@@ -29,12 +23,12 @@ forge8_cli=./.venv-wsl/bin/forge8
 ```
 
 Adjust the paths to your existing installation and project. Open the private
-localhost URL printed by the command, then choose **理解這次修改**.
+localhost URL printed by the command, then switch to change-reading mode.
 Building the source comparison and browsing it do not load the model.
 
 To inspect one concrete input without a model, add `--allow-experiments` when
 opening the desk. A current-version synchronous top-level Python function offers
-**同一輸入，比較兩版…**: the same raw JSON is sent to two separate full-module
+a paired-trial action: the same raw JSON is sent to two separate full-module
 WASI guests, HEAD then current. This does not require the three AI question roles
 below and does not execute their fixed caller. [Paired execution consent, runtime
 setup and limits](isolated-experiments.md#compare-head-and-current-with-the-same-input).
@@ -49,19 +43,19 @@ means absent from the retained current snapshot, not proof of intentional deleti
 1. Inspect a modified file's HEAD and current versions. A Python definition-pair
    button or a two-sided line-range button can replace all existing selections.
    These shortcuts are navigation, not proof of matching runtime behavior.
-2. Keep exactly three explicit roles: **① HEAD 原碼**, **② 目前對應原碼**, and
-   **③ 目前呼叫端（固定）**. The first two must use the same original file path;
+2. Keep exactly three explicit roles: **HEAD source**, **corresponding current source**,
+   and **fixed current caller**. The first two must use the same original file path;
    the third must come from `after/`, the currently saved version.
 3. Include the needed constants, defaults and configuration in the appropriate
-   before/after ranges. Select a wider span, choose its role in
-   **這次加入／取代哪一段？**, then add/replace that role. This preserves the other
+   before/after ranges. Select a wider span, choose its role in the selection
+   dropdown, then add/replace that role. This preserves the other
    roles. A definition shortcut does not automatically find globals or helpers.
-   For Python, **查看名稱來源（不啟動模型）** on either selection distinguishes
+   For Python, inspecting name sources on either selection distinguishes
    parameters, locals, outer captures and module/class lookups, and lists possible
    same-file declarations. Inspect them, then explicitly expand just that role if
    the complete range fits. These are not runtime values or complete dependencies;
    inspect each version separately. No model runs during this preparation.
-   Import declarations additionally offer **追蹤匯入來源**. Every hop stays on
+   Import declarations also offer import-source navigation. Every hop stays on
    that selection's HEAD/current side; missing historical files never fall back
    to current files. Source jumps preserve all three roles and the draft question,
    and do not automatically expand the compared source or invoke a model.
@@ -136,7 +130,7 @@ reopen the desk. These examples do not move assets or alter global shell setting
 
 Bare `configure` shows the saved record. Do not reconfigure an already-correct
 setup. Explicit `FORGE8_HOME` / `FORGE8_STATE_HOME` override saved paths.
-Choose **返回一般閱讀** whenever a comparison is unsupported or unnecessary.
+Return to ordinary reading whenever a comparison is unsupported or unnecessary.
 Saving files or moving HEAD requires a refresh; source guards reject stale
 comparison answers before model startup and again before final acceptance.
 A successful refresh clears session answer history; a failed refresh preserves it.

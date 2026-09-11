@@ -28,7 +28,7 @@ unless already available. An already built trusted Forge8 wheel can instead be i
 with `python -m pip install --no-index --no-deps PATH_TO_WHEEL`.
 
 Open the private URL printed in the terminal. Try `exporter/rows.py`, its definition
-outline and **找同名呼叫** to reach `export_calls.py`. These are source-navigation
+outline and same-spelling call search to reach `export_calls.py`. These are source-navigation
 features, not AI answers or execution. Closing the page does not stop the service;
 press Ctrl+C in the terminal. Snapshots retain private source in the selected state path.
 State must be outside the project; use Linux ext4 for WSL state, not `/mnt/c` or `/mnt/d`.
@@ -83,7 +83,8 @@ After setup, reopen **without both** browse-only flags (`--browse-only` and `--s
 The first explicit question loads the model; browsing does not. Select source, ask a
 self-contained question and check its references. Answers can be slow and materially
 wrong; installation success is not GPU readiness or semantic verification.
-[Reading workflow](FIRST-RUN.zh-TW.md) · [Detailed diagnostics](USAGE.md).
+[Reading workflow](USAGE.md#read-selected-code) ·
+[Diagnostics](USAGE.md#diagnose-the-selected-reader).
 
 ## WSL AI is an advanced deployment, not this installer
 

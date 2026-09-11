@@ -12,7 +12,7 @@ Tested build host: WSL2 Ubuntu 24.04, GCC/G++ 13.3.0, CMake 3.28.3 and GNU Make
 are about 1 GB; allow several GB for extraction and compilation. This recipe
 targets NVIDIA compute capability **8.9** (RTX 40-series), not all NVIDIA GPUs.
 The driver remains the Windows-provided WSL driver; do not install a Linux
-display driver. Compatibility rationale is in [PLATFORMS.md](PLATFORMS.md).
+display driver. See [platform support and deployment limits](PLATFORMS.md).
 
 Run in native WSL Bash. Choose a build drive with several GB free; all toolkit
 files stay there. The commands do not change system PATH, linker or WSL settings.

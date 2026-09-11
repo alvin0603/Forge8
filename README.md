@@ -8,9 +8,9 @@ Built around an 8 GB GPU budget, with native Windows and WSL paths. The AI reade
 is experimental: it can be slow and materially wrong. Source navigation also
 works without a GPU, model, or AI request.
 
-The current interface is Traditional Chinese; questions can be in Chinese or English.
-
-![Selecting source in the local reading desk](docs/images/desk.png)
+The current interface is Traditional Chinese. This documentation describes its
+actions in English; it does not imply an English interface. Questions can be in
+either language.
 
 ## Try it without a model
 
@@ -41,7 +41,8 @@ python3 -m venv .venv-wsl
 Choose your own absolute state path outside the project; WSL state belongs on
 the Linux filesystem, not `/mnt/c` or `/mnt/d`. It stores private source snapshots.
 Open the private URL printed in the terminal. Try `exporter/rows.py`, expand
-「此檔案的定義」, and use 「找同名呼叫」 to reach `export_calls.py`.
+the file's definition outline, and search for same-spelling calls to reach
+`export_calls.py`.
 
 This mode provides static browsing, not AI answers or execution. Closing the
 browser does not stop the service; press Ctrl+C in the terminal.
@@ -62,7 +63,7 @@ Follow the guide to approve setup, then restart without both browse-only flags:
 .\.venv\Scripts\forge8.exe read .\examples\isolated-functions
 ```
 
-Open `merge_records.py`, select its code, click 「加入選段」, and ask what happens
+Open `merge_records.py`, select its code, add it to the question, and ask what happens
 when two rows have the same key. Check the answer against its citations.
 The first question loads the model; opening files does not.
 
@@ -92,9 +93,14 @@ Citation checks establish source identity and coordinates, not whether an
 explanation is true. Guest reports do not establish program equivalence or prove
 an AI answer correct. This is a development preview, not a cloud-model replacement.
 
-[繁體中文快速開始](docs/FIRST-RUN.zh-TW.md) · [Usage](docs/USAGE.md) ·
-[Validation](docs/VALIDATION.md) · [Security](docs/SECURITY.md) ·
-[Contributing](CONTRIBUTING.md)
+## Documentation
+
+- [Install](docs/INSTALL.md): model-free browsing and Windows AI setup.
+- [Use the desk](docs/USAGE.md): source selection, questions, navigation and export.
+- [Platform support](docs/PLATFORMS.md) and [measured limits](docs/VALIDATION.md).
+- Optional workflows: [function trials](docs/isolated-experiments.md),
+  [change reading](docs/change-reading.md), [observed tests](docs/observed-reading.md).
+- [Security](docs/SECURITY.md) and [contributing](CONTRIBUTING.md).
 
 Forge8 is [MIT licensed](LICENSE). Retained upstream examples keep their own
 licenses; see [third-party notices](THIRD_PARTY_NOTICES.md).

@@ -1,11 +1,8 @@
 # Try a function without running its project on your host
 
-Early feature: the single-file CLI and ReadingDesk have been exercised on native
-Windows and WSL. ReadingDesk's explicitly selected module-set flow has also been
-exercised on both native hosts. A CPU-only experiment takes a function name, JSON arguments
-and complete Python source: one self-contained module by default, or a small
-explicit set. It runs in a separate CPython/WASI environment, not your project's
-Python installation.
+An optional CPU-only trial takes a function name, JSON arguments and complete
+Python source: one module by default, or a small explicit set. It runs in a
+separate CPython/WASI environment, not your project's Python installation.
 No model, GPU, existing tests, project dependency installation or network is used
 by `setup` or `run`. Reading and asking questions never trigger experiments.
 
@@ -15,11 +12,15 @@ third-party packages are unavailable, and platform behavior differs. Source
 admission uses your host Python parser; syntax newer than that interpreter is rejected even
 though the guest is Python 3.14.7. Async entry points are not supported.
 
+The interface is currently Traditional Chinese. Action descriptions below are
+English explanations, not literal button labels. See [validation](VALIDATION.md)
+for the tested Windows and WSL workflows.
+
 ## Install the optional runtime once
 
 Forge8's regular installation remains dependency-free. Obtain these pinned
 archives separately; they can be transferred offline. Keep the archives and
-runtime on a drive with space (D: on the reference laptop), not C:.
+runtime on a drive with enough space; the examples use D:.
 
 | Archive | SHA-256 |
 | --- | --- |
@@ -80,32 +81,32 @@ forge8 read '/mnt/c/work/project' --allow-experiments
 The flag enables the controls for this desk session; it does not execute anything.
 Without it, experiments remain disabled. No model is loaded by a trial.
 
-1. Open a `.py` file in ordinary source mode, expand **此檔案的定義**, and choose
-   **試一組輸入…** beside a synchronous top-level function. This only checks the
+1. Open a `.py` file in ordinary source mode, expand the definition outline, and
+   choose the trial action beside a synchronous top-level function. This only checks the
    retained module and entry; it does not execute them.
-2. Check the filename/function; expand **來源快照與執行限制** for the snapshot and
-   complete-module SHA-256.
+2. Check the filename/function; expand the source and execution details for the
+   snapshot and complete-module SHA-256.
    Enter JSON such as `{"args": [[1, 2, 3]], "kwargs": {}}`. Input is sent as raw
    text, without browser number conversion, automatic correction or truncation.
-3. Explicitly click **執行完整模組，再呼叫 …**. This authorizes initialization of
+3. Explicitly confirm execution. This authorizes initialization of
    the **whole module**, followed by that function call—not just selected lines.
-   Read the returned JSON or exception beside the source; expand **程式輸出（未驗證）**
-   for stdout/stderr. Large integers remain exact in the displayed result text.
+   Read the returned JSON or exception beside the source; expand the
+   unverified-output section for stdout/stderr. Large integers remain exact.
 
 Wide panels place input and output side by side. Narrow panels reveal a newly
 returned result without moving keyboard focus or your source/question position.
 Editing JSON keeps the previous result visible but explicitly labels it as the
 previous call's result; only another execution click runs the new input.
-Returned JSON displays readable Unicode directly, including Chinese; invisible
+Returned JSON displays readable Unicode directly; invisible
 controls, bidirectional controls and lone surrogates remain escaped. It stays
 JSON text throughout the browser, so large integers are not rounded.
 
 ### Bring arguments from an existing call
 
 After choosing a trial function, you can browse another `.py` file without
-changing that target. Select the complete same-spelling call, expand
-**從原碼呼叫帶入引數（選用）**, check the displayed source and trial target, then
-click **帶入選取呼叫的引數（不執行）**. This explicitly replaces the JSON draft,
+changing that target. Select the complete same-spelling call, expand the optional
+literal-input controls, check the displayed source and trial target, then request
+argument carryover. This explicitly replaces the JSON draft,
 not the existing result. It does not execute the calling file, load a model or
 select any additional modules. You still confirm execution separately.
 
@@ -131,7 +132,7 @@ is not persisted across a browser reload.
 
 The trial uses the desk's retained raw module bytes, not a reconstruction of
 displayed lines or later editor changes. To try newly saved edits, finish or
-cancel the trial, then **重新讀取專案**. Integrity warnings refer to the retained
+cancel the trial, then refresh the project. Integrity warnings refer to the retained
 snapshot/input and runtime, not a check that your live checkout is unchanged in
 ordinary single-version mode. Paired HEAD/current mode additionally guards live
 source and HEAD as described below.
@@ -139,12 +140,12 @@ Running a trial preserves the reading question, manual selections, existing
 answer and question history. A trial and a model question cannot run simultaneously; refreshing
 the project is also blocked while work is active.
 
-Use **取消這次試跑** and wait for cleanup. Closing or reloading the browser does
-**not** cancel: reload retrieves the same trial without executing again. Ctrl+C
+Use the trial's cancel button and wait for cleanup. Closing or reloading the
+browser does **not** cancel: reload retrieves the same trial without executing again. Ctrl+C
 in the hosting terminal cancels active work and waits for cleanup. If cleanup
 cannot be confirmed, the desk blocks new trials, model questions and refresh;
 inspect the terminal's process information rather than treating it as stopped.
-**重新確認狀態（不執行）** only queries status; it never retries execution or cleanup.
+The status-recheck button only queries status; it never retries execution or cleanup.
 Successful project refresh clears the desk's trial display; it is not a trial
 history. Private inputs and available reports remain in Forge8's local run state.
 
@@ -165,15 +166,15 @@ With the example desk open at `examples/isolated-functions`:
 
 1. Prepare `merge_records.py :: merge_records`, without extra modules. Leave line
    tracing off for both calls. Enter `{"args":[[]],"kwargs":{}}` and explicitly run.
-2. After the call finishes, click **固定這次回報為 A（不執行）**. A retains its
+2. After the call finishes, pin its report as A. A retains its
    submitted input and empty-list return; this click does not execute anything.
 3. Replace the input draft with the complete
    [merge-input.json](../examples/isolated-functions/merge-input.json), then explicitly
    run again. B should report key `A`=3 then key `B`=9007199254740993: last value wins while
    first-seen key order remains. The reports differ; fixed A is still the empty list.
-4. Inspect **B 已送出的輸入（唯讀）**, separately from the editable next-call draft.
-   **以這次回報取代 A（不執行）** replaces the baseline explicitly;
-   **清除 A（不執行）** removes it. Neither action runs a call.
+4. Inspect B's submitted-input disclosure separately from the next-call draft.
+   The replace-baseline and clear-baseline actions change A explicitly; neither
+   runs a call.
 
 Only matching retained snapshot/file/source, entry, runtime and line-tracing policy
 are comparable. Inputs may differ: their original JSON is kept as text, preserving
@@ -184,22 +185,21 @@ Cancelled, incomplete or unbound B has no comparison result and does not replace
 
 Pin/clear control exchanges have a 10-second timeout, not an execution deadline.
 An uncertain reply is recovered by status GETs only, without replaying the update
-or trial; use **重新確認狀態（不執行）** if needed. Persistent uncertainty requires
+or trial; use the status-recheck button if needed. Persistent uncertainty requires
 closing the service in its terminal. Browser reload likewise retrieves state only.
-Successful **重新讀取專案** clears A even when source hashes are unchanged; restarting
+Successful project refresh clears A even when source hashes are unchanged; restarting
 the service loses the in-memory baseline. Private trial files remain on disk, but
 there is no trial-history database, batch runner or automatic model feedback.
-[Current validation status](VALIDATION.md).
 
 ### Inspect guest-reported call line visits
 
-For an ordinary **single-file** trial, check **記錄本次呼叫的原碼行（選用）** before
-the existing explicit execution click. The result adds ordered source-line visits,
-including repeated loop lines and same-file helpers. Expand **本次已送出的輸入（唯讀）**
-to inspect the exact submitted JSON, separately from your editable next-call draft.
+For an ordinary **single-file** trial, enable the optional line-recording checkbox
+before confirming execution. The result adds ordered source-line visits,
+including repeated loop lines and same-file helpers. Expand the submitted-input
+disclosure to inspect the exact JSON separately from your editable next-call draft.
 Changing the draft or checkbox neither executes it nor changes the old report.
 
-Use the step number, previous/next controls and **查看這一步原碼** to inspect a
+Use the step number, previous/next controls and source-view button to inspect a
 checked source excerpt. The first source fetch is explicit and read-only; later
 steps reuse that checked excerpt source. It does not move the main source selection,
 change your question/history, enlarge model context or start inference. The excerpt
@@ -215,7 +215,7 @@ forge8 experiment run examples/isolated-functions/merge_records.py --entry merge
 
 Use the platform's native executable and already provisioned runtime. Add `--json`
 for the full report: optional `reported_trace` is separate from the unchanged
-`reported_result` envelope. [Reading desk introduction](FIRST-RUN.zh-TW.md).
+`reported_result` envelope. See [the reading workflow](USAGE.md).
 
 This remains **guest-reported, untrusted** data. At most 1,000 line events are
 captured during the explicit function call, after module initialization and before
@@ -234,13 +234,12 @@ automatic untraced retry. The existing time/memory/output caps stay unchanged.
 
 Default-off, selected-module and paired-trial behavior is unchanged; enabling
 tracing with extra modules is refused. Reports are not converted to host `observe`
-captures or fed back to a model as verified claims. [Actual dual-native execution,
-browser checks and regression status](VALIDATION.md).
+captures or fed back to a model as verified claims.
 
 ### Compare HEAD and current with the same input
 
 With the same `forge8 read <git-project> --allow-experiments` command, switch to
-**理解這次修改** and open the **目前** (`after/`) version of a `.py` file.
+change-reading mode and open the current (`after/`) version of a `.py` file.
 Use the complete local Git root with an ordinary `.git` directory, existing HEAD
 and native Git 2.43+; [change-reading admission limits](change-reading.md#bounds-and-unsupported-comparisons)
 apply. A source subdirectory alone is not a Git root.
@@ -265,7 +264,7 @@ without converting large numbers. Equal reports do not establish equivalence; a
 difference may involve time/randomness, not just the edit. Guest code can influence
 its own report, so this is **not a trusted oracle or verification of AI reasoning**.
 Two identical guest-reported exceptions are also "same", not a repaired function
-or a passing test. [Native execution and browser status](VALIDATION.md).
+or a passing test.
 
 Initially both sides must have one complete module at the same path, each at most
 64 KiB, with the same synchronous top-level function. Added/deleted/renamed modules,
@@ -282,7 +281,7 @@ trial. Editing input leaves old results visibly labelled; refreshing requires no
 active work and captures a new comparison. A private `comparison-experiment.json`
 binds both actual child reports, input, source and runtime identities without
 changing earlier reading receipts. The ordinary single-version trial remains available.
-Expand **本次已送出的輸入（唯讀）** beside the comparison verdict to inspect the
+Expand the submitted-input disclosure beside the comparison verdict to inspect the
 exact recorded JSON while reading the results. It does not follow the newer draft,
 parse or round its numbers, or trigger execution. Worker/WASI completion labels
 describe the execution environment, not whether the function is correct.
@@ -362,13 +361,13 @@ newlines, doubled internal quotes, and a final CRLF.
 
 For the same trial in ReadingDesk, launch
 `forge8 read examples/isolated-functions --allow-experiments` from the repository.
-Open `exporter/rows.py`, choose **試一組輸入…** for `render_row`, then expand
-**同專案模組（選用）**. The entry is already included; select
-`exporter/__init__.py` and `exporter/escaping.py`, then click
-**核對這組模組（不執行）**. Check the complete file list and snapshot/hash details,
-paste [the example JSON](../examples/isolated-functions/export-input.json), then
-explicitly click **匯入所列 3 份完整模組，再呼叫 render_row**. Selection and checking
-do not execute anything. Changing selections requires checking again; clearing
+Open `exporter/rows.py`, choose the trial action for `render_row`, then expand
+the optional project-module controls. The entry is already included; select
+`exporter/__init__.py` and `exporter/escaping.py`, then request module checking.
+Check the file list and snapshot/hash details, paste
+[the example JSON](../examples/isolated-functions/export-input.json), then
+explicitly authorize importing all three complete modules and calling `render_row`.
+Selection and checking do not execute anything. Changing selections requires checking again; clearing
 the extra files and checking returns to single-file mode.
 
 The desk's opened source root is the import root: open `examples/isolated-functions`,

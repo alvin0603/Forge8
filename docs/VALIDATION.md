@@ -1,39 +1,21 @@
 # What has been checked
 
-Development preview, September 2026. These results describe the reference
-ASUS FA507NV with an RTX 4060 Laptop (8,188 MiB VRAM) and approximately 32 GB RAM.
-They are not independent benchmarks or predictions for another machine.
+Development preview, September 2026. Hardware observations use one ASUS FA507NV
+with an RTX 4060 Laptop (8,188 MiB VRAM) and approximately 32 GB RAM. Hosted CI
+results are listed separately. Neither predicts model performance on another machine.
 
 ## Application paths
 
-Publication preparation additionally checked the simplified desktop/narrow UI
-against real Windows and WSL services, without submitting model or guest jobs.
-The Windows setup script passed small refusal/consent fixtures, extracted all
-55 pinned runtime files from the actual local ZIPs, and completed using existing
-verified model assets. No fresh internet download or second-machine GPU setup
-is claimed by these installer checks.
-
-After public-file cleanup, fresh installations of the same wheel each passed
-1,367 Python tests: WSL in 96.5 s (12 skips), Windows in 144.5 s (40 skips,
-including unavailable optional pytest checks). The final fixture set does not
-depend on private development directories. An earlier Windows run exposed a
-header-rejection test race; the fixture now requires rejection before sending
-the body, without relaxing server authentication.
-
-The first GitHub-hosted run passed on Ubuntu but exposed Windows short-path
-assumptions and a Python 3.12 file-timestamp discrepancy. The fixes retain file
-identity checks and recognize cached source aliases during observation. Added
-regressions check both valid aliases and stale code, plus timestamp/identity
-changes; tests are not skipped to accommodate the runner.
-After these fixes, local full suites passed 1,373 tests on each platform (WSL:
-91.3 s, 12 skips; Windows: 153.7 s, 35 skips). A separate Windows Python 3.12.10
-check passed 189 relevant tests, with 6 platform/optional-dependency skips.
-
-- The pre-publication application passed 1,367 Python tests on each native
-  platform: Windows Python 3.10 and WSL Python 3.12. Platform-specific skips were
-  35 and 12 respectively. Seven Node UI harnesses passed.
-- The same installed wheel was exercised with a real browser against both
-  native services, including an asset-free setup and narrow/desktop layouts.
+- GitHub-hosted Windows and Ubuntu each passed the 1,374-test Python suite and
+  all seven Node UI harnesses. The Python runs took 124.8 s on Windows (13 skips)
+  and 41.0 s on Ubuntu (12 skips). Windows setup fixtures also passed.
+  See [the CI run](https://github.com/alvin0603/forge8/actions/runs/34521454959).
+- During publication preparation, one wheel was installed and exercised with a
+  real browser against both native services, including an asset-free setup and
+  narrow/desktop layouts.
+- Windows setup passed refusal/consent fixtures, extracted all 55 pinned runtime
+  files from existing ZIPs, and reused verified model assets. These checks did
+  not test a fresh internet download or a second machine's GPU setup.
 - Same-spelling call search located 16 manually reviewed spans in Requests and
   cachetools on both platforms. Four observed browser searches per platform
   completed in 0.047–0.225 s on Windows and 0.041–0.115 s on WSL. This measures
@@ -46,6 +28,7 @@ check passed 189 relevant tests, with 6 platform/optional-dependency skips.
 The examples and tests are included. Raw development records are intentionally
 not published because they may contain local source, paths or credentials.
 The observations above are maintainer-reported, not independently certified.
+CI checks application logic, not GPU compatibility or model-answer quality.
 
 ## Model quality and waiting time
 
@@ -62,6 +45,9 @@ One earlier four-question delivery check had only 2 fully correct answers on
 each native platform. Windows cold completion took about 73 s; WSL took about
 146 s. Warm completions took roughly 26–61 s. These are small development runs,
 not P50/P95 estimates or a general accuracy score.
+
+A separate initial change-reading answer omitted required references and added
+an incorrect scope caveat. It did not pass answer acceptance.
 
 An adopted WSL I/O change reduced one measured complete-byte preparation from
 35.8 s to 16.5 s without skipping hashes. Full-answer latency has not been
