@@ -621,7 +621,7 @@ class ReadingDesk:
         if (set(payload) != expected
                 or payload["mode"] != "head_current"
                 or any(type(payload[key]) is not str for key in payload)
-                or searching and payload["search"] != "nearby-v1"):
+                or searching and payload["search"] not in ("nearby-v1", "source-v1")):
             raise ValueError("expected an explicit HEAD/current mode and one current-version function")
         with self.lock:
             if not self.allow_experiments:
@@ -651,7 +651,8 @@ class ReadingDesk:
                 "before": {"file": prior["id"], "path": prior["path"],
                     "source_sha256": prior_pin.sha256, "source_bytes": prior_pin.size_bytes}}
             if searching:
-                target["search_plan"] = prepare_input_search(payload["input_text"].encode("utf-8"))
+                source_options = {"sources": (prior_data, data), "entry": entry} if payload["search"] == "source-v1" else {}
+                target["search_plan"] = prepare_input_search(payload["input_text"].encode("utf-8"), **source_options)
             return target
 
     def start_experiment(self, payload: dict) -> dict:
@@ -782,17 +783,21 @@ class ReadingDesk:
 
     def _start_paired_experiment(self, payload: dict) -> dict:
         from .experiments import (RUNTIME_NAME, _file, _json, _write_json, compare_reported_results,
-                                  native_platform, prepare_input_search, prepare_inputs, run_experiment)
+                                  native_platform, prepare_inputs, run_experiment)
         searching = "search" in payload
         expected = {"mode", "file", "version", "entry", "source_sha256", "before_sha256",
                     "head", "input_text", "allow_execution"} | ({"search", "search_plan_sha256"} if searching else set())
         if (set(payload) != expected or payload["allow_execution"] is not True
-                or searching and payload["search"] != "nearby-v1"):
+                or searching and payload["search"] not in ("nearby-v1", "source-v1")):
             raise ValueError("explicit consent for both complete modules and exact HEAD/current identities is required")
         with self.lock:
             if self._busy():
                 raise ValueError("only one model question or isolated experiment may run at a time")
-            target = self._prepare_paired_experiment({key: payload[key] for key in ("mode", "file", "version", "entry")})
+            selection = {key: payload[key] for key in ("mode", "file", "version", "entry")}
+            if searching:
+                selection.update(search=payload["search"], input_text=payload["input_text"])
+            target = self._prepare_paired_experiment(selection)
+            search_plan = target.pop("search_plan", None)
             if (payload["source_sha256"] != target["source_sha256"]
                     or payload["before_sha256"] != target["before"]["source_sha256"] or payload["head"] != target["head"]):
                 raise ValueError("paired sources or HEAD changed; prepare both modules again")
@@ -800,7 +805,6 @@ class ReadingDesk:
                 raise ValueError("input must be raw JSON text, not a browser-converted object")
             raw_input = payload["input_text"].encode("utf-8")
             prepare_inputs(raw_input)
-            search_plan = prepare_input_search(raw_input) if searching else None
             if searching and payload["search_plan_sha256"] != search_plan["sha256"]:
                 raise ValueError("input search plan changed; preview and authorize the exact inputs again")
             input_sha = hashlib.sha256(raw_input).hexdigest()
@@ -820,7 +824,7 @@ class ReadingDesk:
                 "comparison_result": "unavailable", "comparison_rule": "canonical-json-v1",
                 "comparison_unchanged": False}
             if searching:
-                self.experiment["search"] = {"strategy": "nearby-v1", "plan_sha256": search_plan["sha256"],
+                self.experiment["search"] = {"strategy": search_plan["strategy"], "plan_sha256": search_plan["sha256"],
                     "total": len(search_plan["inputs"]), "completed": 0, "case_index": 1,
                     "input_text": payload["input_text"], "stop_reason": None}
 

@@ -274,15 +274,110 @@ def prepare_inputs(raw_input: bytes) -> dict:
     return payload
 
 
-def prepare_input_search(raw_input: bytes) -> dict:
+def _source_input_hints(code: bytes, entry: str, seed: dict):
+    """Yield same-spelling comparison literals, never inferred program values."""
+    try:
+        text = prepare_module(code, entry)
+        tree = ast.parse(text)
+    except (UnicodeError, RecursionError) as exc:
+        raise ValueError("input-search source cannot be statically parsed as UTF-8") from exc
+    stack, visited = [tree], 0
+    while stack:
+        node = stack.pop()
+        visited += 1
+        if visited > _MAX_CALL_AST_NODES:
+            raise ValueError("input-search source exceeds 50000 AST nodes")
+        stack.extend(ast.iter_child_nodes(node))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == entry)
+    arguments = function.args
+    positional = arguments.posonlyargs + arguments.args
+    names = [arg.arg for arg in positional + arguments.kwonlyargs]
+    if (arguments.vararg or arguments.kwarg or len(names) != len(set(names))
+            or len(seed["args"]) > len(positional)):
+        return iter(())
+    # This describes the written signature only. Reassignment, decorators and
+    # dynamic rebinding can change runtime meaning; hints are not binding proofs.
+    paths = {arg.arg: ("args", i) for i, arg in enumerate(positional[:len(seed["args"])])}
+    keywords = {arg.arg for arg in arguments.args + arguments.kwonlyargs}
+    for key in seed["kwargs"]:
+        if key not in keywords or key in paths:
+            return iter(())
+        paths[key] = ("kwargs", key)
+    required = [arg.arg for arg in positional[:len(positional) - len(arguments.defaults)]]
+    required.extend(arg.arg for arg, default in zip(arguments.kwonlyargs, arguments.kw_defaults) if default is None)
+    if any(name not in paths for name in required):
+        return iter(())
+    # AST identifiers are normalized; do not treat a different raw spelling as
+    # an explicitly supplied keyword or a same-spelling parameter reference.
+    lines = [line.encode("utf-8") for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    for arg in positional + arguments.kwonlyargs:
+        spelling = arg.arg.encode("utf-8")
+        if lines[arg.lineno - 1][arg.col_offset:arg.col_offset + len(spelling)] != spelling:
+            paths.pop(arg.arg, None)
+
+    absent = object()
+
+    def literal(node):
+        if isinstance(node, ast.Constant) and type(node.value) in (str, int, bool, type(None)):
+            return node.value
+        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub))
+                and isinstance(node.operand, ast.Constant) and type(node.operand.value) is int):
+            return -node.operand.value if isinstance(node.op, ast.USub) else node.operand.value
+        return absent
+
+    def hints():
+        stack = list(reversed(function.body))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+                                 ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                continue
+            if isinstance(node, ast.Compare) and len(node.ops) == 1:
+                left, right, operator = node.left, node.comparators[0], node.ops[0]
+                if isinstance(operator, (ast.In, ast.NotIn)):
+                    name = left
+                    literals = right.elts if isinstance(right, (ast.Tuple, ast.List)) and len(right.elts) <= 16 else []
+                    if any(literal(item) is absent for item in literals):
+                        literals = []
+                else:
+                    name, other = (left, right) if isinstance(left, ast.Name) else (right, left)
+                    literals = [other]
+                if isinstance(name, ast.Name) and name.id in paths:
+                    spelling = lines[name.lineno - 1][name.col_offset:name.end_col_offset]
+                    if spelling == name.id.encode("utf-8"):
+                        path = paths[name.id]
+                        seed_value = seed[path[0]][path[1]]
+                        for item in literals:
+                            value = literal(item)
+                            if value is absent or type(value) is not type(seed_value):
+                                continue
+                            values = (value, value - 1, value + 1) if type(value) is int else (value,)
+                            for replacement in values:
+                                if replacement != seed_value:
+                                    yield path, replacement, node.lineno
+            stack.extend(reversed(list(ast.iter_child_nodes(node))))
+    return hints()
+
+
+def prepare_input_search(raw_input: bytes, *, sources: tuple[bytes, bytes] | None = None,
+                         entry: str | None = None) -> dict:
     """Preview a small, deterministic set of single-scalar input replacements.
 
-    No source inspection, type inference or execution. Traverse args then kwargs
-    in their original order, and round-robin across at most 32 scalar locations.
-    The exact seed is retained; generated dictionaries keep insertion order too.
+    Traverse args then kwargs in their original order, across at most 32 scalar
+    locations. Optional whole sources supply six same-spelling comparison hints
+    before nearby replacements. Neither path evaluates source or proves domains,
+    bindings or reachability. Exact seed bytes and dictionary order are retained.
     """
     seed = prepare_inputs(raw_input)
     seed_text = raw_input.decode("utf-8")
+    source_hints = None
+    if sources is not None:
+        if (type(sources) is not tuple or len(sources) != 2 or any(type(code) is not bytes for code in sources)
+                or type(entry) is not str or len(entry) > 200):
+            raise ValueError("input-search sources require two complete byte strings and a function name")
+        source_hints = [_source_input_hints(code, entry, seed) for code in sources]
+    elif entry is not None:
+        raise ValueError("input-search entry requires both sources")
 
     def encoded(value):
         return json.dumps(value, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
@@ -326,33 +421,83 @@ def prepare_input_search(raw_input: bytes) -> dict:
 
     inputs = [{"input_text": seed_text, "location": "seed"}]
     seen = {encoded(seed)}
+
+    def append_input(path, replacement, location_index, hint=None):
+        nonlocal limited
+        candidate = deepcopy(seed)
+        parent = candidate
+        for component in path[:-1]:
+            parent = parent[component]
+        parent[path[-1]] = replacement
+        try:
+            text = encoded(candidate)
+        except ValueError:
+            limited = True
+            return False
+        if text in seen:
+            return False
+        if len(text.encode("utf-8")) > MAX_INPUT_BYTES:
+            limited = True
+            return False
+        if len(inputs) == 12:
+            limited = True
+            return False
+        prepare_inputs(text.encode("utf-8"))
+        pointer = "/" + "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in path)
+        location = pointer if len(pointer) <= 256 and pointer.isprintable() else f"scalar {location_index}"
+        item = {"input_text": text, "location": location}
+        if hint is not None:
+            item["hint"] = hint
+        inputs.append(item)
+        seen.add(text)
+        return True
+
+    if source_hints is not None:
+        location_indices = {path: index for index, (path, _) in enumerate(locations, 1)}
+        distinct, hint_count = set(), 0
+        active = list(enumerate(source_hints))
+        while active and len(distinct) < 32:
+            remaining = []
+            for side, hints in active:
+                item = next(hints, None)
+                if item is None:
+                    continue
+                remaining.append((side, hints))
+                path, replacement, line = item
+                if path not in location_indices:
+                    continue
+                try:
+                    key = (path, encoded(replacement))
+                except ValueError:
+                    limited = True
+                    continue
+                if key in distinct:
+                    continue
+                distinct.add(key)
+                if hint_count < 6:
+                    hint = {"side": ("before", "after")[side], "line": line}
+                    hint_count += append_input(path, replacement, location_indices[path], hint)
+                else:
+                    limited = True
+                if len(distinct) == 32:
+                    limited = True
+                    break
+            active = remaining
     for replacement_index in range(5):
         for location_index, (path, replacements) in enumerate(locations, 1):
             if replacement_index >= len(replacements):
                 continue
-            candidate = deepcopy(seed)
-            parent = candidate
-            for component in path[:-1]:
-                parent = parent[component]
-            parent[path[-1]] = replacements[replacement_index]
-            text = encoded(candidate)
-            if text in seen:
-                continue
-            if len(text.encode("utf-8")) > MAX_INPUT_BYTES:
-                limited = True
-                continue
-            if len(inputs) == 12:
-                limited = True
+            append_input(path, replacements[replacement_index], location_index)
+            if len(inputs) == 12 and limited:
                 break
-            prepare_inputs(text.encode("utf-8"))
-            pointer = "/" + "/".join(str(part).replace("~", "~0").replace("/", "~1") for part in path)
-            location = pointer if len(pointer) <= 256 and pointer.isprintable() else f"scalar {location_index}"
-            inputs.append({"input_text": text, "location": location})
-            seen.add(text)
         if len(inputs) == 12 and limited:
             break
     plan = {"strategy": "nearby-v1", "seed_input_text": seed_text, "inputs": inputs,
             "max_initializations": 2 * len(inputs), "max_seconds": 120, "limited": limited}
+    if sources is not None:
+        plan["strategy"] = "source-v1"
+        plan["sources"] = {"before": hashlib.sha256(sources[0]).hexdigest(),
+                           "after": hashlib.sha256(sources[1]).hexdigest(), "entry": entry}
     return {**plan, "sha256": hashlib.sha256(encoded(plan).encode("ascii")).hexdigest()}
 
 

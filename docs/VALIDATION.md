@@ -30,44 +30,49 @@ not published because they may contain local source, paths or credentials.
 The observations above are maintainer-reported, not independently certified.
 CI checks application logic, not GPU compatibility or model-answer quality.
 
-## Nearby-input search
+## Source-guided input search
 
-Three declared development edits were tried with complete modules in the real
-WASI runtime. Each original input returned the same result in HEAD and current;
-the same fixed input generator then found these differences on both native hosts:
+The September 14 check compared source-guided input selection with the original
+nearby rules using real, fresh HEAD/current WASI guests. Three deliberately simple
+cases shared one complete owned module; each seed produced matching returns.
+Old nearby inputs exhausted without finding a difference in all three cases.
+The source-guided planner found each difference on both native hosts:
 
-| Edit | Input that exposed it | HEAD / current return | Windows | WSL |
-| --- | --- | --- | ---: | ---: |
-| Fix swapped clamp bounds | `clamp(1, 0, 10)` | `0` / `1` | 5.8 s | 25.7 s |
-| Change duplicate records from last-wins to first-wins | Two A records with values 0, then 1 | A=1 / A=0 | 9.5 s | 40.2 s |
-| Remove CPython dedent's whitespace-only normalization | One space | `""` / `" "` | 8.1 s | 37.9 s |
+| Deliberate edit | Distinguishing argument | Input pairs | Windows | WSL |
+| --- | --- | ---: | ---: | ---: |
+| `count >= 100` becomes `count > 100` | `100` | 2 | 4.8 s | 28.6 s |
+| Remove `"audit"` from a mode-membership condition | `"audit"` | 3 | 7.1 s | 42.5 s |
+| `value > 9007199254740993` becomes `>=` | `9007199254740993` | 2 | 6.7 s | 29.4 s |
 
-Times include the search's checks and all guest calls, not just the final
-function. These are single observations on the reference laptop, not percentiles
-or general platform comparisons. The changes were made for development acceptance;
-they are not claimed upstream regressions or a held-out accuracy benchmark.
+The respective reported returns were `0` / `5`, `"checked"` / `"unchecked"`, and
+`true` / `false`. Integer inputs stayed exact above JavaScript's safe-integer range.
+Old nearby searches took 7.2–11.8 s on Windows and 39.6–67.4 s on WSL without
+exposing these changes. Times include checks and every guest call. They are single
+observations, not percentiles or a general speedup/accuracy benchmark.
 
-The clamp search stopped after two input pairs; merge and dedent after three.
-An unchanged identity function exhausted its three inputs without a difference.
-Each native host completed 22 guests across those four searches, then cancelled
-one running worker without starting its partner. All started workers exited;
-source, runtime and report integrity checks passed. No model was called, and the
-target source was never executed on the host.
+Three earlier development cases also retained their results: swapped clamp
+bounds, first-wins versus last-wins duplicate records, and removal of CPython
+dedent's whitespace normalization. An unchanged control exhausted its three
+inputs without a difference. Each native host completed 58 guests across all ten
+searches and cancelled one live worker without starting its partner. Source,
+runtime and report checks passed; all started workers were reclaimed. No model
+was called, and target source never executed on the host.
 
-Real Edge journeys checked explicit preview/consent, separate original/found
-inputs, preserved question drafts, GET-only reload and 1440/390-pixel layouts.
-These journeys did not test preservation of populated AI history or selections;
-those are covered by mocked UI regressions. A later presentation-only check
-verified that the full preview opens before consent and can be reopened after
-folding away during execution.
+Final Edge journeys against both native services checked source-hint previews,
+separate execution consent, exact original/found inputs, question preservation,
+GET-only reload and 1440/390-pixel layouts. Each used four additional guests.
+These checked a nonempty question with an empty answer, not populated AI history.
+Mocked UI regressions cover preservation of selections/history and failed transport.
 
-The complete local regression run passed 1,396 Python tests on both natives
-(WSL: 12 skips; Windows Python 3.10: 35 skips). A subsequently added deadline
-boundary test passed in the 36-test paired suite on both. All seven Node harnesses
-and 21 Windows setup assertions passed. Skips are not successful executions.
+The final local suite passed 1,414 Python tests on each native host: WSL 97.0 s
+(12 skips), Windows Python 3.10 200.0 s (35 skips). All seven Node harnesses passed
+on both; Windows setup passed 21 assertions without downloads or native launches.
+Skipped tests are not successful executions. CI results are separate.
 
-This establishes a bounded working feature, not a new differential-testing
-algorithm, general bug-finding rate or improvement in the model's explanations.
+This improves a specific blind spot without increasing the 12-input cap or adding
+dependencies. It uses conventional constant seeding, not a new differential-testing
+algorithm. These are consumed development examples, not upstream regressions,
+held-out bug-finding rates or evidence that model explanations improved.
 
 ## Model quality and waiting time
 

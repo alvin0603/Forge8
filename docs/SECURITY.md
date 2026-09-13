@@ -710,13 +710,23 @@ Guest code can interfere with its own reporting protocol. Agreement is not equiv
 purity or validation of an AI explanation; a difference need not be caused by the edit
 (for example, time/randomness can differ). This is deliberately **not a trusted oracle**.
 
-### Explicit nearby-input search
+### Explicit bounded input search
 
-The paired panel can preview a fixed `nearby-v1` plan without execution. Run
-admission recomputes the plan from the exact raw seed and checks its SHA-256
-against the user's submitted preview identity. At most 12 inputs (including the
-seed) authorize at most 24 complete-module initializations/calls. Scalar changes
-are deterministic and bounded; they do not inspect source or infer valid domains.
+The paired panel previews `source-v1` without execution or inference. It parses
+both retained complete modules (64 KiB / 50,000 AST nodes each), mapping simple
+same-spelling parameter comparisons to supplied scalar arguments. At most six
+literal/adjacent-integer candidates precede the existing nearby rules. Hints keep
+their side and physical line; the plan binds both complete source hashes and the
+entry name. Nested scopes, dataflow, defaults, ambiguous argument layouts and
+unsupported comparisons do not gain inferred values. Hints do not establish
+runtime binding, valid domains or branch reachability. No target code is evaluated.
+
+The original source-independent `nearby-v1` API remains available. Run admission
+recomputes the exact strategy and plan from retained bytes and the raw seed, then
+checks its SHA-256 against the submitted preview identity. At most 12 inputs
+(including the seed) authorize at most 24 complete-module initializations/calls.
+Both strategies visit at most 32 existing scalar locations and change only one
+per candidate. They never change containers or combine parameter changes.
 The 120-second cooperative budget includes source checks and guest calls; cleanup
 may extend it. Per-guest limits and full runtime verification remain unchanged.
 

@@ -1936,13 +1936,15 @@ async function checkPairedInputSearch(context, nodes) {
     before: {file: "0", path: files[0].path, source_sha256: "b".repeat(64), source_bytes: 42}};
   const input = ' {"args":[9007199254740993],"kwargs":{"text":"<script>你好</script>"}}\n';
   const inputs = [input, input.replace("9007199254740993", "9007199254740992"), input.replace("9007199254740993", "9007199254740994")];
-  const plan = {strategy: "nearby-v1", seed_input_text: input, inputs: inputs.map((input_text, index) => ({input_text, location: index ? "/args/0" : "seed"})),
+  const plan = {strategy: "source-v1", seed_input_text: input, inputs: inputs.map((input_text, index) => ({input_text, location: index ? "/args/0" : "seed",
+    ...(index ? {hint: {side: index === 1 ? "before" : "after", line: 2}} : {})})),
+    sources: {before: target.before.source_sha256, after: target.source_sha256, entry: target.entry},
     max_initializations: 6, max_seconds: 120, limited: true, sha256: "f".repeat(64)};
   const observation = text => ({result_text: text, stdout: "", stderr: "", process_status: "passed", host_status: "exited",
     source_unchanged: true, runtime_unchanged: true, complete: true, report_sha256: "c".repeat(64)});
   const pending = id => ({...target, id, status: "running", phase: "checking", input_text: input, elapsed_seconds: 0,
     observations: {}, comparison_result: "unavailable", comparison_rule: "canonical-json-v1", comparison_unchanged: false,
-    search: {strategy: "nearby-v1", plan_sha256: plan.sha256, total: 3, completed: 0, case_index: 1, input_text: input, stop_reason: null}});
+    search: {strategy: "source-v1", plan_sha256: plan.sha256, total: 3, completed: 0, case_index: 1, input_text: input, stop_reason: null}});
   let current = {id: null, status: "idle"}, prepareReply = () => reply({...target, search_plan: plan});
   let runReply = () => {current = pending("search-one"); return reply({id: current.id});};
   context.fetch = async (route, options) => {
@@ -1980,11 +1982,13 @@ async function checkPairedInputSearch(context, nodes) {
   assert.match(nodes["experiment-run"].textContent, /預覽.*不執行/);
   await nodes["experiment-run"].listeners.click();
   assert.equal(count("/api/experiment/run"), 0, "preview cannot execute either side");
-  assert.deepEqual(requests.at(-1).body, {mode: "head_current", file: "1", version: target.version, entry: "echo", search: "nearby-v1", input_text: input});
+  assert.deepEqual(requests.at(-1).body, {mode: "head_current", file: "1", version: target.version, entry: "echo", search: "source-v1", input_text: input});
   assert.equal(nodes["experiment-search-plan"].hidden, false);
   assert.equal(nodes["experiment-search-plan"].open, true, "new previews show every input before consent");
   assert.deepEqual(nodes["experiment-search-inputs"].querySelectorAll("pre").map(node => node.textContent), inputs);
   assert.equal(nodes["experiment-search-inputs"].querySelectorAll("script").length, 0);
+  assert.deepEqual(nodes["experiment-search-inputs"].querySelectorAll("span").map(node => node.textContent),
+    [" · 條件線索：HEAD L2", " · 條件線索：目前 L2"]);
   assert.match(nodes["experiment-run"].textContent, /3 組.*6 次完整模組.*120 秒/); unchanged();
 
   // A -> B -> A edits and toggle ABA both require a new explicit preview.
@@ -1996,7 +2000,7 @@ async function checkPairedInputSearch(context, nodes) {
   assert.equal(count("/api/experiment/prepare"), beforeConsent); assert.equal(count("/api/experiment/run"), 1);
   assert.deepEqual(requests.find(request => request.route === "/api/experiment/run").body,
     {file: "1", version: target.version, entry: "echo", source_sha256: target.source_sha256, input_text: input, allow_execution: true,
-      mode: "head_current", head: target.head, before_sha256: target.before.source_sha256, search: "nearby-v1", search_plan_sha256: plan.sha256});
+      mode: "head_current", head: target.head, before_sha256: target.before.source_sha256, search: "source-v1", search_plan_sha256: plan.sha256});
   assert.equal(nodes["experiment-search-enabled"].disabled, true);
   assert.equal(nodes["experiment-search-plan"].open, false, "submitted plans collapse to leave room for results");
   assert.equal(nodes["experiment-submitted-input-text"].textContent, input);
@@ -2033,10 +2037,19 @@ async function checkPairedInputSearch(context, nodes) {
   }
   for (const change of [{max_seconds: 121}, {max_initializations: 5}, {sha256: plan.sha256 + "\n"}, {seed_input_text: inputs[1]},
     {inputs: [...plan.inputs, plan.inputs[0]]}, {inputs: [{input_text: input, location: "x".repeat(257)}]},
-    {inputs: [{input_text: input, location: "\u202e"}]}]) {
+    {inputs: [{input_text: input, location: "\u202e"}]}, {sources: {...plan.sources, before: "0".repeat(64)}},
+    {sources: {...plan.sources, after: "0".repeat(64)}}, {sources: {...plan.sources, entry: "other"}},
+    {inputs: [plan.inputs[0], {...plan.inputs[1], hint: {side: "<script>", line: 2}}, plan.inputs[2]]},
+    {inputs: [plan.inputs[0], {...plan.inputs[1], hint: {side: "before", line: 0}}, plan.inputs[2]]},
+    {inputs: [plan.inputs[0], {...plan.inputs[1], hint: {side: "before", line: 65537}}, plan.inputs[2]]},
+    {inputs: [{...plan.inputs[0], hint: {side: "before", line: 1}}, ...plan.inputs.slice(1)]}]) {
     context.invalidPlan = {...plan, ...change};
-    assert.equal(run("validExperimentSearchPlan(invalidPlan,searchPlan.seed_input_text)"), false, JSON.stringify(change));
+    assert.equal(run("validExperimentSearchPlan(invalidPlan,searchPlan.seed_input_text,searchTarget)"), false, JSON.stringify(change));
   }
+  assert.equal(run("validExperimentSearchPlan(searchPlan,searchPlan.seed_input_text,searchTarget)"), true);
+  context.legacyPlan = {...plan, strategy: "nearby-v1", inputs: plan.inputs.map(({hint, ...item}) => item)};
+  delete context.legacyPlan.sources;
+  assert.equal(run("validExperimentSearchPlan(legacyPlan,searchPlan.seed_input_text,searchTarget)"), true);
   current = {...found, comparison_result: "same", search: {...found.search, case_index: 3, completed: 3, input_text: inputs[2], stop_reason: "exhausted"}};
   await run("pollExperiment()"); assert.match(nodes["experiment-pair-summary"].textContent, /已測 3 組.*不代表兩版等價/);
   current = {...found, status: "incomplete", comparison_result: "unavailable", comparison_unchanged: false,
@@ -2083,6 +2096,17 @@ async function checkPairedInputSearch(context, nodes) {
   await nodes["experiment-run"].listeners.click(); assert.equal(count("/api/experiment/run"), 3);
   current = {id: null, status: "idle"}; await run("pollExperiment()");
   assert.equal(run("state.experiment.unknown"), true); assert.equal(nodes["experiment-run"].disabled, true);
+  // A lost POST has no accepted job to compare: the submitted strategy must
+  // still match, even when the reported plan hash, source and counts all agree.
+  current = pending("search-recovered"); current.search = {...current.search, strategy: "nearby-v1"};
+  const beforeStrategyCheck = requests.length;
+  await run("pollExperiment()");
+  assert.equal(run("state.experiment.unknown"), true, "a different strategy cannot reconcile the pending source search");
+  assert.equal(run("state.experiment.job"), null);
+  assert.equal(run("state.experiment.submission.search.strategy"), "source-v1");
+  assert.equal(nodes["experiment-run"].disabled, true);
+  assert.deepEqual(requests.slice(beforeStrategyCheck).map(request => [request.route, request.method]),
+    [["/api/experiment/current", "GET"]], "strategy mismatch only rechecks state; it never repeats execution");
   current = pending("search-recovered"); await run("pollExperiment()");
   assert.equal(run("state.experiment.unknown"), false); assert.equal(run("state.experiment.job.id"), "search-recovered");
   await nodes["experiment-cancel"].listeners.click();

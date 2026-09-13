@@ -439,14 +439,20 @@ function sameExperimentIdentity(left, right) {
     (!pairedExperiment(left) || (left.source_bytes === right.source_bytes &&
       ["file", "path", "source_sha256", "source_bytes"].every(key => left.before?.[key] === right.before?.[key])));
 }
-function validExperimentSearchPlan(plan, input) {
+function validExperimentSearchPlan(plan, input, target) {
   const shape = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === keys.sort().join(",");
-  return Boolean(shape(plan, ["strategy", "seed_input_text", "inputs", "max_initializations", "max_seconds", "limited", "sha256"]) &&
-    plan.strategy === "nearby-v1" && typeof plan.sha256 === "string" && plan.sha256.length === 64 && /^[0-9a-f]{64}$/.test(plan.sha256) &&
+  const sourced = plan?.strategy === "source-v1";
+  return Boolean(shape(plan, ["strategy", "seed_input_text", "inputs", "max_initializations", "max_seconds", "limited", "sha256", ...(sourced ? ["sources"] : [])]) &&
+    (sourced || plan.strategy === "nearby-v1") && typeof plan.sha256 === "string" && plan.sha256.length === 64 && /^[0-9a-f]{64}$/.test(plan.sha256) &&
+    (!sourced || shape(plan.sources, ["before", "after", "entry"]) && target &&
+      plan.sources.before === target.before?.source_sha256 && plan.sources.after === target.source_sha256 && plan.sources.entry === target.entry) &&
     plan.seed_input_text === input && typeof input === "string" && input.trim() && new TextEncoder().encode(input).length <= 16384 &&
     Array.isArray(plan.inputs) && plan.inputs.length >= 1 && plan.inputs.length <= 12 && plan.inputs[0]?.input_text === input && plan.inputs[0]?.location === "seed" &&
     plan.max_initializations === 2 * plan.inputs.length && plan.max_seconds === 120 && typeof plan.limited === "boolean" &&
-    plan.inputs.every(item => shape(item, ["input_text", "location"]) && typeof item.input_text === "string" && item.input_text.trim() &&
+    plan.inputs.every(item => shape(item, ["input_text", "location", ...(sourced && item?.hint !== undefined ? ["hint"] : [])]) &&
+      (item.hint === undefined || sourced && item.location !== "seed" && shape(item.hint, ["side", "line"]) &&
+        ["before", "after"].includes(item.hint.side) && Number.isSafeInteger(item.hint.line) && item.hint.line >= 1 && item.hint.line <= 65536) &&
+      typeof item.input_text === "string" && item.input_text.trim() &&
       new TextEncoder().encode(item.input_text).length <= 16384 && typeof item.location === "string" && [...item.location].length <= 256 && item.location &&
       !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(item.location)) &&
     new Set(plan.inputs.map(item => item.input_text)).size === plan.inputs.length &&
@@ -454,7 +460,7 @@ function validExperimentSearchPlan(plan, input) {
 }
 function currentExperimentSearchPlan(view = state.experiment) {
   return view?.searchDraft === true && pairedExperiment(view.target) && view.searchPlanTarget &&
-    sameExperimentIdentity(view.searchPlanTarget, view.target) && validExperimentSearchPlan(view.searchPlan, $("experiment-input").value) ? view.searchPlan : null;
+    sameExperimentIdentity(view.searchPlanTarget, view.target) && validExperimentSearchPlan(view.searchPlan, $("experiment-input").value, view.target) ? view.searchPlan : null;
 }
 function invalidateExperimentSearch(view) {
   view.searchRevision = (view.searchRevision || 0) + 1;
@@ -465,7 +471,7 @@ function validExperimentSearch(job) {
   if (search === undefined) return true;
   if (!pairedExperiment(job) || !search || typeof search !== "object" || Array.isArray(search) ||
       Object.keys(search).sort().join(",") !== "case_index,completed,input_text,plan_sha256,stop_reason,strategy,total" ||
-      search.strategy !== "nearby-v1" || typeof search.plan_sha256 !== "string" || search.plan_sha256.length !== 64 || !/^[0-9a-f]{64}$/.test(search.plan_sha256) ||
+      !["nearby-v1", "source-v1"].includes(search.strategy) || typeof search.plan_sha256 !== "string" || search.plan_sha256.length !== 64 || !/^[0-9a-f]{64}$/.test(search.plan_sha256) ||
       !Number.isSafeInteger(search.total) || search.total < 1 || search.total > 12 || !Number.isSafeInteger(search.case_index) ||
       search.case_index < 1 || search.case_index > search.total || !Number.isSafeInteger(search.completed) ||
       search.completed < search.case_index - 1 || search.completed > search.case_index ||
@@ -490,7 +496,7 @@ function renderExperimentSearch() {
   $("experiment-search-note").hidden = !enabled;
   $("experiment-search-note").textContent = view?.searchError || (view?.searchPending ? "正在產生輸入清單；尚未執行。" : plan ?
     `下方完整列出 ${plan.inputs.length} 組輸入；${plan.limited ? "候選受上限限制。" : ""}確認後最多初始化 ${plan.max_initializations} 次完整模組，搜尋預算 120 秒，另加清理；遇到第一組不同回報即停止。` :
-    "先預覽再執行：依固定規則，每次只改一個值，最多 12 組（包含原始輸入），不組合多處變更。先按下方預覽，不會執行程式或啟動模型。");
+    "先預覽再執行：從兩版程式的比較條件挑選候選值，再補上通用變化。每次只改一個值，最多 12 組，不保證符合輸入契約或走到該分支。預覽不執行程式或啟動模型。");
   $("experiment-search-plan").hidden = !plan;
   const key = plan ? JSON.stringify(plan) : "";
   if (view && view.searchRendered !== key) {
@@ -498,6 +504,7 @@ function renderExperimentSearch() {
     if (plan) $("experiment-search-plan").open = true;
     if (plan) for (const item of plan.inputs) {
       const row = element("li", item.location === "seed" ? "原始輸入" : `變動位置：${item.location}`);
+      if (item.hint) row.append(element("span", ` · 條件線索：${item.hint.side === "before" ? "HEAD" : "目前"} L${item.hint.line}`));
       const text = element("pre", item.input_text); text.tabIndex = 0; row.append(text); $("experiment-search-inputs").append(row);
     }
   }
@@ -512,9 +519,10 @@ async function previewExperimentSearch(view) {
   view.searchPending = true; experimentControls();
   try {
     const prepared = await experimentApi("/api/experiment/prepare", {mode: "head_current", file: target.file, version: target.version,
-      entry: target.entry, search: "nearby-v1", input_text: input});
+      entry: target.entry, search: "source-v1", input_text: input});
     if (!current()) return;
-    if (!validExperimentTarget(prepared, project, true) || !sameExperimentIdentity(prepared, target) || !validExperimentSearchPlan(prepared.search_plan, input))
+    if (!validExperimentTarget(prepared, project, true) || !sameExperimentIdentity(prepared, target) ||
+        prepared.search_plan?.strategy !== "source-v1" || !validExperimentSearchPlan(prepared.search_plan, input, target))
       throw new Error("輸入清單或兩側來源不一致；沒有執行，請重新預覽。");
     view.searchPlan = prepared.search_plan; view.searchPlanTarget = target;
   } catch (error) { if (current()) view.searchError = `${error.message} 未執行，也未自動重試。`; }
@@ -740,7 +748,7 @@ function experimentControls() {
   $("experiment-run").disabled = !experimentsEnabled() || !view?.target || inChanges() && !paired || modulesDirty || view.preparing || view.searchPending || view.inputPending || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || inputBytes > 16384 || !$("experiment-input").value.trim();
   const searchPlan = currentExperimentSearchPlan(view);
   $("experiment-run").textContent = paired && view?.searchDraft === true ? (searchPlan ?
-    `確認上列 ${searchPlan.inputs.length} 組：最多初始化 ${searchPlan.max_initializations} 次完整模組並搜尋（120 秒＋清理）` : "預覽附近輸入（不執行）") : paired ? `依序初始化 HEAD／目前兩份完整模組，各呼叫一次 ${view?.target?.entry || "函式"}` :
+    `確認上列 ${searchPlan.inputs.length} 組：最多初始化 ${searchPlan.max_initializations} 次完整模組並搜尋（120 秒＋清理）` : "預覽候選輸入（不執行）") : paired ? `依序初始化 HEAD／目前兩份完整模組，各呼叫一次 ${view?.target?.entry || "函式"}` :
     `${view?.target?.module_set ? `匯入所列 ${view.target.module_set.files.length} 份完整模組，再呼叫` : "執行完整模組，再呼叫"} ${view?.target?.entry || "函式"}`;
   $("experiment-module-prepare").disabled = modulesBlocked;
   $("experiment-module-filter").disabled = modulesBlocked;
@@ -1035,7 +1043,8 @@ async function pollExperiment() {
               view.job.reported_trace && JSON.stringify(view.job.reported_trace) !== JSON.stringify(job.reported_trace)) ||
             view.submission?.target && (!sameExperimentIdentity(view.submission.target, job) || view.submission.input !== job.input_text)) throw new Error("同一試跑的來源或輸入發生變動；保留先前狀態，請重新確認。");
         if (view.job?.id === job.id && ["strategy", "plan_sha256", "total"].some(key => view.job.search?.[key] !== job.search?.[key]) ||
-            view.submission?.search && (!job.search || job.search.plan_sha256 !== view.submission.search.sha256 || job.search.total !== view.submission.search.inputs.length) ||
+            view.submission?.search && (!job.search || job.search.strategy !== view.submission.search.strategy ||
+              job.search.plan_sha256 !== view.submission.search.sha256 || job.search.total !== view.submission.search.inputs.length) ||
             job.search && view.searchExecutionPlan?.sha256 === job.search.plan_sha256 &&
               (job.search.total !== view.searchExecutionPlan.inputs.length || job.search.input_text !== view.searchExecutionPlan.inputs[job.search.case_index - 1]?.input_text))
           throw new Error("搜尋清單或實際輸入不一致；未覆蓋先前回報，也未重送執行。");
@@ -1092,12 +1101,12 @@ async function runExperiment() {
       source_sha256: target.source_sha256, input_text: input, allow_execution: true,
       ...(tracing ? {trace_lines: true} : {}),
       ...(pairedExperiment(target) ? {mode: "head_current", head: target.head, before_sha256: target.before.source_sha256} : {}),
-      ...(searchPlan ? {search: "nearby-v1", search_plan_sha256: searchPlan.sha256} : {}),
+      ...(searchPlan ? {search: searchPlan.strategy, search_plan_sha256: searchPlan.sha256} : {}),
       ...(target.module_set ? {modules: experimentModuleIds(target), module_set_sha256: target.module_set.sha256} : {})});
     if (state.experiment !== view || state.project !== project) return;
     if (typeof job?.id !== "string" || !job.id || searchPlan && (!validJobId(job.id) || job.id === view.submission?.previous)) throw new Error("服務未回傳可追蹤的新試跑編號。");
     view.job = {...submittedTarget, id: job.id, status: "running", input_text: input, elapsed_seconds: 0,
-      ...(searchPlan ? {search: {strategy: "nearby-v1", plan_sha256: searchPlan.sha256, total: searchPlan.inputs.length, completed: 0,
+      ...(searchPlan ? {search: {strategy: searchPlan.strategy, plan_sha256: searchPlan.sha256, total: searchPlan.inputs.length, completed: 0,
         case_index: 1, input_text: input, stop_reason: null}} : {}),
       ...(pairedExperiment(target) ? {phase: "checking", observations: {}, comparison_result: "unavailable", comparison_rule: "canonical-json-v1", comparison_unchanged: false} : {})};
     view.lastId = job.id; view.submission = null;

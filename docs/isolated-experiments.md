@@ -288,25 +288,33 @@ describe the execution environment, not whether the function is correct.
 
 ### Find an input that exposes a change
 
-In the same paired panel, enable nearby-input search after entering a seed. The
+In the same paired panel, enable input search after entering a seed. The
 first button click **only previews** the complete input list. A second click
 authorizes the displayed plan. Editing the seed or changing the target requires
 a new preview. This needs the optional WASI runtime, not a model or existing tests.
 The preview opens in full before consent and folds away during execution to leave
 room for results; you can reopen it without running anything.
 
-For example, two versions of a configuration helper may both return `5` for a
-timeout of `5`, while disagreeing on `0`: `options.get("timeout") or 30` substitutes
-`30`, but `options.get("timeout", 30)` preserves `0`. A nearby-input search can
-try that boundary without you manually guessing and submitting each pair.
+For example, changing `count >= 100` to `count > 100` leaves the result for `0`
+unchanged. Trying only `0` and its neighbors misses the change. The desk now draws
+`100` from the source and includes it in the preview, with the version and line
+that suggested it. String comparisons such as `mode in ("strict", "audit")` can
+also supply candidates. You still inspect and authorize the complete input list.
 
-`nearby-v1` includes your original input and at most 11 variants. Each variant
-replaces one scalar value with a common boundary: zero or adjacent integers,
-empty/whitespace strings, a flipped boolean, or a small replacement for null.
-It visits arguments then keyword arguments in their original order, interleaving
-replacements across at most 32 scalar locations. It does not combine changes,
-infer valid input contracts, alter containers or minimize a discovered example.
-The preview identifies when candidates were limited; it is not exhaustive.
+`source-v1` retains your exact original input and at most 11 variants. Up to six
+come from simple comparisons of explicitly supplied parameters with same-type
+integer, string, boolean or null literals in either version; integers also suggest
+their neighbors. Remaining slots use the previous nearby rules: zero/adjacent
+numbers, empty/whitespace strings, flipped booleans and small replacements for null.
+The original `nearby-v1` API remains available without source hints.
+
+Each variant changes just one scalar among the first 32 locations, visiting
+arguments then keywords in their original order. Source hints do not follow
+aliases, subscripts, arithmetic, nested scopes or chained comparisons. Ambiguous
+argument layouts use only nearby rules; omitted defaults are never filled in.
+No container changes, multi-field combinations, valid-domain inference or shrinking
+are performed. A condition line is a syntactic clue, not proof that the parameter
+still has that value or the branch will execute. The preview marks candidate limits.
 
 After consent, one cancellable job runs fresh HEAD/current guests sequentially.
 It stops at the first differing reported return or exception, with at most 24

@@ -188,6 +188,133 @@ class PairedExperimentTests(DeskFixture):
         payload.update(search="nearby-v1", input_text=raw, search_plan_sha256=preview["search_plan"]["sha256"])
         return payload, preview["search_plan"]
 
+    def source_search_fixture(self):
+        self.code = self.code.replace(b"return {'value': value, 'tag': TAG}", b"return value > 100")
+        self.before = self.code.replace(b"value > 100", b"value >= 100")
+        self.live.write_bytes(self.code)
+        self.git_read.return_value = GitBaseline(self.head, {"main.py": self.before}, ())
+        self.desk.refresh(mode="changes")
+
+    def source_search_payload(self, raw=' {"args":[9],"kwargs":{}}\n'):
+        preview = self.desk.prepare_experiment({**self.target(), "search": "source-v1", "input_text": raw})
+        payload = self.payload()
+        payload.update(search="source-v1", input_text=raw, search_plan_sha256=preview["search_plan"]["sha256"])
+        return payload, preview["search_plan"]
+
+    def test_source_search_preview_uses_retained_raw_modules_not_live_or_display_text(self):
+        self.source_search_fixture()
+        saved = deepcopy((self.desk.project, self.desk.contents, self.desk.experiment_status()))
+        paths = set(self.desk.root.iterdir())
+        # Neither a later live edit nor display escaping may supply search literals.
+        self.live.write_bytes(self.code.replace(b"100", b"999"))
+        with patch.object(experiments, "prepare_input_search", wraps=experiments.prepare_input_search) as prepare:
+            payload, plan = self.source_search_payload()
+        prepare.assert_called_once_with(payload["input_text"].encode("utf-8"),
+            sources=(self.before, self.code), entry="entry")
+        self.assertIn(b"\r\n", self.code)
+        self.assertIn("\u200b".encode("utf-8"), self.code)
+        self.assertEqual(plan["strategy"], "source-v1")
+        self.assertEqual(plan["sources"], {"before": sha(self.before), "after": sha(self.code), "entry": "entry"})
+        values = [json.loads(row["input_text"])["args"][0] for row in plan["inputs"]]
+        self.assertIn(100, values)
+        self.assertNotIn(999, values)
+        boundary = plan["inputs"][values.index(100)]
+        self.assertIn(boundary["hint"]["side"], ("before", "after"))
+        self.assertEqual(boundary["hint"]["line"], 5)
+        self.assertEqual(plan["seed_input_text"], payload["input_text"])
+        self.assertEqual(plan["inputs"][0]["input_text"], payload["input_text"])
+        self.assertEqual(plan["max_initializations"], 2 * len(plan["inputs"]))
+        self.assertLessEqual(len(plan["inputs"]), 12)
+        self.assertEqual(plan["max_seconds"], 120)
+        self.assertEqual((self.desk.project, self.desk.contents, self.desk.experiment_status()), saved)
+        self.assertEqual(set(self.desk.root.iterdir()), paths)
+        self.assert_no_execution()
+
+    def test_source_search_rejects_changed_identity_seed_and_strategy_before_worker(self):
+        self.source_search_fixture()
+        payload, plan = self.source_search_payload()
+        invalid = [{**payload, "source_sha256": "0" * 64},
+            {**payload, "before_sha256": "0" * 64}, {**payload, "head": "b" * 40},
+            {**payload, "version": "stale"}, {**payload, "entry": "missing"},
+            {**payload, "search": "nearby-v1"}, {**payload, "search": "unknown"},
+            {**payload, "input_text": '{"args":[8],"kwargs":{}}'},
+            {**payload, "search_plan_sha256": "0" * 64},
+            {**payload, "sources": plan["sources"]}, {**payload, "inputs": plan["inputs"]}]
+        paths = set(self.desk.root.iterdir())
+        for request in invalid:
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                self.desk.start_experiment(request)
+        self.assertEqual(set(self.desk.root.iterdir()), paths)
+        self.assert_no_execution()
+
+    def test_source_search_rejects_retained_source_drift_before_worker(self):
+        self.source_search_fixture()
+        payload, _ = self.source_search_payload()
+        snapshot = Path(self.desk.browse_snapshot.snapshot_root)
+        for side, original in (("before", self.before), ("after", self.code)):
+            with self.subTest(side=side):
+                path = snapshot / side / "main.py"
+                try:
+                    path.write_bytes(original.replace(b"100", b"101"))
+                    with self.assertRaises(ValueError):
+                        self.desk.start_experiment(payload)
+                finally:
+                    path.write_bytes(original)
+                self.assert_no_execution()
+
+    def test_source_search_recomputes_exact_preview_and_binds_plan_to_receipt(self):
+        self.source_search_fixture()
+        with patch.object(experiments, "prepare_input_search", wraps=experiments.prepare_input_search) as prepare:
+            payload, plan = self.source_search_payload()
+
+            def run(_runtime, source, entry, inputs, destination, **_options):
+                self.assertEqual(self.desk.experiment_status()["search"]["strategy"], "source-v1")
+                self.assertEqual(source.read_bytes(), self.before if destination.name == "before" else self.code)
+                return self.write_report(source, entry, inputs, destination, {"return": destination.name})
+
+            identifier, state, count = self.run_pair(run, payload)
+        self.assertEqual(prepare.call_count, 2)
+        for invocation in prepare.call_args_list:
+            self.assertEqual(invocation.args, (payload["input_text"].encode("utf-8"),))
+            self.assertEqual(invocation.kwargs, {"sources": (self.before, self.code), "entry": "entry"})
+        self.assertEqual(count, 2)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["search"]["plan_sha256"], plan["sha256"])
+        receipt = json.loads((self.desk.root / identifier / "comparison-experiment.json").read_bytes())
+        self.assertEqual(receipt["plan"], plan)
+        self.assertEqual(receipt["result"], state)
+
+    def test_source_search_reaches_literal_difference_without_executing_target_on_host(self):
+        self.source_search_fixture()
+        payload, plan = self.source_search_payload()
+        nearby = experiments.prepare_input_search(payload["input_text"].encode("utf-8"))
+        self.assertNotIn(100, [json.loads(row["input_text"])["args"][0] for row in nearby["inputs"]])
+        seen = []
+
+        def run(_runtime, source, entry, inputs, destination, **options):
+            value = json.loads(inputs.read_bytes())["args"][0]
+            seen.append((destination.name, value))
+            self.assertEqual(options["expected_source_sha256"], sha(source.read_bytes()))
+            # A trusted test double models these two predicates; target bytes
+            # include a top-level raise and are never imported or executed here.
+            result = value >= 100 if destination.name == "before" else value > 100
+            return self.write_report(source, entry, inputs, destination, {"return": result})
+
+        _, state, count = self.run_pair(run, payload)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["comparison_result"], "different")
+        self.assertEqual(state["search"]["strategy"], "source-v1")
+        self.assertEqual(state["search"]["stop_reason"], "different")
+        self.assertEqual(json.loads(state["search"]["input_text"])["args"], [100])
+        self.assertEqual(state["input_text"], payload["input_text"])
+        self.assertEqual(seen[-2:], [("before", 100), ("after", 100)])
+        self.assertEqual(count, 2 * state["search"]["completed"])
+        self.assertLessEqual(count, plan["max_initializations"])
+        self.assertEqual(json.loads(state["observations"]["before"]["result_text"]), {"return": True})
+        self.assertEqual(json.loads(state["observations"]["after"]["result_text"]), {"return": False})
+        self.process_guard.assert_not_called()
+        self.guards[1].assert_not_called()  # The actual WASI worker is still mocked out.
+
     def test_search_preview_is_exact_static_and_does_not_change_trial_state(self):
         original = deepcopy(self.desk.experiment_status())
         paths = set(self.desk.root.iterdir())
