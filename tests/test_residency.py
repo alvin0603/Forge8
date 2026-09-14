@@ -81,6 +81,10 @@ class ResidentTests(unittest.TestCase):
         return self.owner.acquire(self.assets, **self.options,
             cancel_event=options.pop("cancel_event", threading.Event()), **options)
 
+    def preload(self, **options):
+        return self.owner.preload(self.assets, **self.options,
+            cancel_event=options.pop("cancel_event", threading.Event()), **options)
+
     def artifact(self, lease, name="request", *, discovery=False, **changes):
         directory = self.runs / name
         directory.mkdir()
@@ -114,6 +118,220 @@ class ResidentTests(unittest.TestCase):
         self.owner.release(first.session_id)
         self.assertEqual(self.prepare.call_count, 2)
         self.assertEqual(first.supervisor.stop_calls, 1)
+
+    def test_preload_has_no_lease_or_request_and_later_acquire_reuses_verified_model(self):
+        progress = Mock()
+        with patch.object(residency, "ResidentLease") as lease_class:
+            status = self.preload(progress=progress)
+            lease_class.assert_not_called()
+        generation = self.owner._generation
+        self.assertEqual(status["state"], "idle")
+        self.assertEqual(status["id"], generation["id"])
+        self.assertTrue(status["release_allowed"])
+        self.assertIsNone(self.owner._lease)
+        self.assertEqual(generation["requests"], [])
+        self.assertEqual(list(self.runs.rglob("manifest.json")), [])
+        self.assertEqual(list(self.runs.rglob("discovery.json")), [])
+        self.assertTrue((generation["root"] / "start.json").is_file())
+        self.probe.assert_called_once_with(generation["supervisor"])
+        self.assertEqual(self.prepare.call_count, 1)
+        self.assertEqual(progress.call_count, 2)
+        lease = self.acquire()
+        self.assertIs(lease._generation, generation)
+        self.assertEqual(len(self.supervisors), 1)
+        self.complete(lease)
+        self.assertEqual(self.prepare.call_count, 1)
+        self.owner.release(lease.session_id)
+        self.assertEqual(self.prepare.call_count, 2)
+
+    def test_repeated_preload_does_not_probe_hash_or_renew_idle_deadline(self):
+        status = self.preload()
+        deadline = self.owner._deadline
+        self.probe.reset_mock()
+        with self.assertRaises(ValueError):
+            self.preload()
+        self.assertEqual(self.owner._deadline, deadline)
+        self.assertEqual(self.owner.status()["id"], status["id"])
+        self.assertEqual(self.owner.status()["state"], "idle")
+        self.probe.assert_not_called()
+        self.assertEqual(self.prepare.call_count, 1)
+
+    def test_preload_and_acquire_preserve_failed_preparation_without_creating_a_generation(self):
+        failed = residency.ServerPreparation("refused", ("pinned asset is unavailable",))
+        self.prepare.return_value = failed
+        for operation in (self.preload, self.acquire):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(residency.ResidentPreparationError) as caught:
+                    operation()
+                self.assertIs(caught.exception.preparation, failed)
+                self.assertEqual(self.owner.status()["state"], "unloaded")
+                self.assertEqual(self.owner.status()["receipts"], [])
+        self.assertEqual(self.supervisors, [])
+        self.assertFalse((self.desk / "model-sessions").exists())
+
+    def test_zero_request_generation_has_valid_release_expiry_and_close_receipts(self):
+        for reason in ("explicit", "idle_timeout", "desk_close"):
+            with self.subTest(reason=reason):
+                status = self.preload()
+                generation = self.owner._generation
+                if reason == "explicit":
+                    self.owner.release(status["id"])
+                elif reason == "desk_close":
+                    self.owner.close()
+                else:
+                    with self.owner._condition:
+                        self.owner._deadline = time.monotonic() - 1
+                        self.owner._condition.notify_all()
+                        self.assertTrue(self.owner._condition.wait_for(
+                            lambda: self.owner._state == "unloaded", timeout=3))
+                receipt = json.loads((generation["root"] / "closed.json").read_text(encoding="utf-8"))
+                self.assertTrue(receipt["ok"])
+                self.assertEqual(receipt["reason"], reason)
+                self.assertEqual(receipt["requests"], [])
+                self.assertTrue(receipt["server_logs"])
+                self.assertTrue(receipt["start_record_unchanged"])
+                self.assertTrue(receipt["asset_identity_unchanged"])
+                self.assertEqual(generation["supervisor"].stop_calls, 1)
+                self.assertIsNone(generation["supervisor"].api_key)
+                self.assertIsNone(self.owner._lease)
+                self.assertIsNone(self.owner._deadline)
+        self.assertEqual(self.prepare.call_count, 6)
+        self.assertEqual(list(self.runs.rglob("manifest.json")), [])
+        self.assertEqual(list(self.runs.rglob("discovery.json")), [])
+        with self.assertRaises(ValueError):
+            self.preload()
+
+    def test_preload_cancellation_before_during_hash_start_and_slot_reclaims_before_return(self):
+        original_start = residency.LocalServerSupervisor.start
+        for phase in ("before", "hash", "start", "slot"):
+            with self.subTest(phase=phase):
+                cancellation = threading.Event()
+                before = len(self.supervisors)
+                if phase == "before":
+                    cancellation.set()
+
+                def prepare(*args, **kwargs):
+                    if phase == "hash":
+                        cancellation.set()
+                    return self.preparation
+
+                def start(supervisor):
+                    result = original_start(supervisor)
+                    if phase == "start":
+                        cancellation.set()
+                    return result
+
+                def slot(supervisor):
+                    if phase == "slot":
+                        cancellation.set()
+                    return True
+
+                with patch.object(residency, "prepare_server", side_effect=prepare) as preparing, \
+                        patch.object(residency.LocalServerSupervisor, "start", start), \
+                        patch.object(residency, "_slot_idle", side_effect=slot):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.preload(cancel_event=cancellation)
+                    if phase == "before":
+                        preparing.assert_not_called()
+                self.assertEqual(self.owner.status()["state"], "unloaded")
+                self.assertIsNone(self.owner._lease)
+                self.assertIsNone(self.owner._generation)
+                if phase in {"before", "hash"}:
+                    self.assertEqual(len(self.supervisors), before)
+                else:
+                    supervisor = self.supervisors[-1]
+                    self.assertEqual(supervisor.stop_calls, 1)
+                    self.assertIsNone(supervisor.api_key)
+                    receipt = json.loads(Path(self.owner.status()["receipts"][-1]["receipt_path"]).read_text())
+                    self.assertTrue(receipt["ok"])
+                    self.assertEqual(receipt["reason"], "acquire_failed")
+                    self.assertEqual(receipt["requests"], [])
+
+    def test_preload_slot_or_start_failure_reclaims_without_exposing_response(self):
+        original_start = residency.LocalServerSupervisor.start
+        for phase in ("slot", "start"):
+            for raises in (False, True):
+                with self.subTest(phase=phase, raises=raises):
+                    def start(supervisor):
+                        result = original_start(supervisor)
+                        if phase == "start":
+                            if raises:
+                                raise RuntimeError("test-private-secret")
+                            result.ok = False
+                            result.as_dict = lambda: {"ok": False, "pid": 123}
+                        return result
+
+                    def slot(supervisor):
+                        if raises:
+                            raise RuntimeError("test-private-secret")
+                        return False
+
+                    with patch.object(residency.LocalServerSupervisor, "start", start), \
+                            patch.object(residency, "_slot_idle", side_effect=slot):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.preload()
+                    self.assertNotIn("test-private-secret", str(caught.exception))
+                    self.assertEqual(self.owner.status()["state"], "unloaded")
+                    self.assertIsNone(self.owner._lease)
+                    self.assertEqual(self.supervisors[-1].stop_calls, 1)
+                    self.assertIsNone(self.supervisors[-1].api_key)
+                    receipt = json.loads(Path(self.owner.status()["receipts"][-1]["receipt_path"]).read_text())
+                    self.assertEqual(receipt["requests"], [])
+                    self.assertEqual(receipt["reason"], "acquire_failed")
+                    self.assertEqual(receipt["ok"], not (phase == "start" and raises))
+
+    def test_failed_preload_with_unknown_exit_latches_owner_without_a_lease(self):
+        def slot(supervisor):
+            supervisor.shutdown_result = ServerShutdownResult("kill_timeout", None, True, True)
+            return False
+
+        self.probe.side_effect = slot
+        with self.assertRaises(RuntimeError):
+            self.preload()
+        self.assertEqual(self.owner.status()["state"], "cleanup_unknown")
+        self.assertIsNone(self.owner._lease)
+        self.assertEqual(self.owner._failed_generation["requests"], [])
+        self.assertIs(self.owner._failed_generation["supervisor"], self.supervisors[-1])
+        with self.assertRaises(ValueError):
+            self.preload()
+        with self.assertRaises(ValueError):
+            self.acquire()
+
+    def test_preload_reservation_refuses_concurrent_work_until_idle(self):
+        entered, proceed = threading.Event(), threading.Event()
+        results, errors = [], []
+
+        def prepare(*args, **kwargs):
+            entered.set()
+            if not proceed.wait(3):
+                raise RuntimeError("test did not release preparation")
+            return self.preparation
+
+        def work():
+            try:
+                results.append(self.preload())
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+
+        with patch.object(residency, "prepare_server", side_effect=prepare):
+            worker = threading.Thread(target=work)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.owner.status()["state"], "checking")
+                with self.assertRaises(ValueError): self.acquire()
+                with self.assertRaises(ValueError): self.preload()
+                with self.assertRaises(ValueError): self.owner.close()
+            finally:
+                proceed.set()
+                worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["state"], "idle")
+        lease = self.acquire()
+        with self.assertRaises(ValueError): self.preload()
+        self.complete(lease)
 
     def test_checkpoint_is_not_shutdown_or_secret_erasure(self):
         lease = self.acquire()

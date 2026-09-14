@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, urlsplit
 
-from .cli import _explain_gpu_state, _fix_runs_parent, _create_runs_parent, _absolute_deployment_path, _new_task_id, _paths_overlap, _resolve_fix_asset_root, _run_explain_cli, _run_locate_cli, _run_project_cli, _unverified_explain_prose, _insufficient_explain_reason, _reading_request_complete
+from .cli import _explain_gpu_state, _fix_runs_parent, _create_runs_parent, _absolute_deployment_path, _new_task_id, _paths_overlap, _resolve_fix_asset_root, _fix_asset_anchors, _run_explain_cli, _run_locate_cli, _run_project_cli, _unverified_explain_prose, _insufficient_explain_reason, _reading_request_complete
 from .checks import CheckCleanupError
 from .comparison import prepare_comparison
 from .discovery import _OUTLINE_FILE_BYTES, _OUTLINE_ITEMS, _OUTLINE_NODES, _outline_status, _python_outline
@@ -295,6 +295,9 @@ class ReadingDesk:
         self.closed = False
         self.cancel_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.preload_worker: threading.Thread | None = None
+        self.preload_cancel_event = threading.Event()
+        self.preload = {"id": 0, "status": "idle"}
         self.allow_experiments = allow_experiments
         self.experiment_worker: threading.Thread | None = None
         self.experiment_cancel_event = threading.Event()
@@ -325,10 +328,78 @@ class ReadingDesk:
     def _busy(self) -> bool:
         model_busy = self.model is not None and self.model.status()["state"] not in {"idle", "unloaded"}
         return self.model_release_pending or model_busy or self.experiment.get("cleanup_unknown") is True or any(worker is not None and worker.is_alive()
-                   for worker in (self.worker, self.experiment_worker))
+                   for worker in (self.worker, self.experiment_worker, self.preload_worker))
 
     def model_status(self) -> dict:
-        return {"enabled": False} if self.model is None else {"enabled": True, **self.model.status()}
+        with self.lock:
+            return {"enabled": False} if self.model is None else {
+                "enabled": True, **self.model.status(), "preload": dict(self.preload)}
+
+    @staticmethod
+    def _preload_operation(payload: dict) -> int:
+        if (type(payload) is not dict or set(payload) != {"operation_id"}
+                or type(payload["operation_id"]) is not int
+                or not 1 <= payload["operation_id"] <= 1_000_000):
+            raise ValueError("expected a bounded preload operation id")
+        return payload["operation_id"]
+
+    def preload_model(self, payload: dict) -> dict:
+        identifier = self._preload_operation(payload)
+        with self.lock:
+            if self.closed or self.model is None:
+                raise ValueError("resident model controls are unavailable")
+            if identifier != self.preload["id"] + 1:
+                raise ValueError("preload identity is stale; read model status before trying again")
+            if self._busy() or self.model.status()["state"] != "unloaded":
+                raise ValueError("preload requires an unloaded, available model")
+            runtime, model, profile = _fix_asset_anchors(Path(), self.reader)[:3]
+            self.preload_cancel_event = threading.Event()
+            self.preload = {"id": identifier, "status": "running"}
+
+            def run():
+                status = "failed"
+                try:
+                    self.model.preload(self.assets, runtime_manifest_path=runtime,
+                        model_manifest_path=model, profile_path=profile,
+                        cancel_event=self.preload_cancel_event)
+                    with self.lock:
+                        if not self.preload_cancel_event.is_set():
+                            self.preload["status"] = "ready"
+                            return
+                    # Cancellation won after readiness but before publication.
+                    # Keep the worker reserved until that exact generation closes.
+                    current = self.model.status()
+                    if current["state"] == "idle":
+                        self.model.release(current["id"])
+                except BaseException:
+                    pass  # Never return native/server exception text or credentials.
+                finally:
+                    with self.lock:
+                        if self.preload["status"] != "ready":
+                            if (self.preload_cancel_event.is_set()
+                                    and self.model.status()["state"] == "unloaded"):
+                                status = "cancelled"
+                            self.preload["status"] = status
+
+            self.preload_worker = threading.Thread(target=run, name="forge8-model-preload")
+            try:
+                self.preload_worker.start()
+            except BaseException:
+                self.preload_cancel_event.set()
+                self.preload_worker = None
+                self.preload["status"] = "failed"
+                raise ValueError("model preload worker could not start") from None
+            return self.model_status()
+
+    def cancel_preload(self, payload: dict) -> dict:
+        identifier = self._preload_operation(payload)
+        with self.lock:
+            if self.closed or self.model is None or identifier != self.preload["id"]:
+                raise ValueError("unknown preload operation")
+            if self.preload["status"] in {"running", "cancelling"}:
+                self.preload_cancel_event.set()
+                self.preload["status"] = "cancelling"
+            return self.model_status()
 
     def release_model(self, payload: dict) -> dict:
         if type(payload) is not dict or set(payload) != {"session_id"}:
@@ -1590,7 +1661,8 @@ class ReadingDesk:
             self.closed = True
             self.cancel_event.set()
             self.experiment_cancel_event.set()
-            workers = (self.worker, self.experiment_worker)
+            self.preload_cancel_event.set()
+            workers = (self.worker, self.experiment_worker, self.preload_worker)
         for worker in workers:
             if worker is not None:
                 worker.join()
@@ -1619,8 +1691,13 @@ def make_server(desk: ReadingDesk) -> tuple[ThreadingHTTPServer, str]:
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.end_headers()
+                self.wfile.write(data)
+            except (ConnectionError, TimeoutError):
+                # A timed-out browser reconciles with GET. The accepted operation
+                # continues; do not attempt another reply on its closed socket.
+                self.close_connection = True
 
         def dispatch(self, mutation=False):
             origin = f"http://127.0.0.1:{self.server.server_port}"
@@ -1658,6 +1735,10 @@ def make_server(desk: ReadingDesk) -> tuple[ThreadingHTTPServer, str]:
                     return self.send(200, desk.model_status())
                 if mutation and parsed.path == "/api/model/release":
                     return self.send(200, desk.release_model(payload))
+                if mutation and parsed.path == "/api/model/preload":
+                    return self.send(202, desk.preload_model(payload))
+                if mutation and parsed.path == "/api/model/preload/cancel":
+                    return self.send(200, desk.cancel_preload(payload))
                 if not mutation and parsed.path == "/api/project":
                     with desk.lock:
                         project = desk.project

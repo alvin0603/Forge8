@@ -20,6 +20,7 @@ assert.match(html, /id="replace-source"[^>]*type="button"/, "manual recovery mus
 assert.match(html, /id="replace-source-note"[^>]*role="status"/);
 assert.match(html, /id="continuation-clear"[^>]*type="button"/);
 assert.match(html, /id="model-release"[^>]*type="button"/);
+for (const id of ["model-preload", "model-preload-cancel"]) assert.match(html, new RegExp(`id="${id}"[^>]*type="button"`));
 assert.match(html, /id="model-countdown"[^>]*aria-live="off"/, "countdown ticks must not become repeated live announcements");
 for (const id of ["ai-discovery-actions", "reading-tools", "selection-budget", "traceback-tools"]) {
   const disclosure = html.match(new RegExp(`<details\\b[^>]*\\bid="${id}"[^>]*>`));
@@ -3379,6 +3380,98 @@ async function checkResidentModel(context, nodes) {
   run("delete state.project.model_policy"); checkProjectPhaseCopy(false);
   context.fetch = originalFetch; context.setTimeout = originalTimer;
 }
+async function checkModelPreload(context, nodes) {
+  const run = code => vm.runInContext(code, context), settle = () => new Promise(resolve => setImmediate(resolve));
+  const originalFetch = context.fetch, originalTimer = context.setTimeout, requests = [];
+  const reply = value => ({ok: true, json: async () => value});
+  const unloaded = (id = 0, status = "idle") => ({enabled: true, state: "unloaded", id: null, reader: "qwen35",
+    release_allowed: false, idle_remaining_seconds: null, receipts: [], preload: {id, status}});
+  const loading = id => ({...unloaded(id, "running"), state: "loading", id: `model-${id}`});
+  const project = {name: "preload", version: "preload-v1", files: [{id: "0", path: "a.py", lines: 2}], excluded: [],
+    reader: "qwen35", model_policy: {mode: "resident", idle_timeout_seconds: 600}};
+  let model = unloaded(), respond, preloadReply = () => new Promise(resolve => {respond = resolve;});
+  let modelReply = () => reply(model);
+  let cancelReply = () => {model.preload.status = "cancelling"; return reply(model);};
+  context.setTimeout = () => 1;
+  context.preloadProject = project;
+  context.fetch = async (route, options) => {
+    const payload = options.body === undefined ? undefined : JSON.parse(options.body);
+    requests.push({route, method: options.method, payload});
+    if (route === "/api/model") return modelReply();
+    if (route === "/api/jobs/current") return reply({id: null, status: "idle"});
+    if (route === "/api/history") return reply({version: project.version, entries: [], evicted: 0});
+    if (route === "/api/experiment/current") return reply({id: null, status: "idle"});
+    if (route === "/api/model/preload") return preloadReply(payload);
+    if (route === "/api/model/preload/cancel") return cancelReply(payload);
+    if (route === "/api/model/release") {model = unloaded(model.preload.id, "ready"); return reply(model);}
+    assert.equal(route, "/api/source?file=0&version=preload-v1");
+    return reply({path: "a.py", version: project.version, lines: ["def f():", "    return 7"], outline: {status: "unsupported", items: []}});
+  };
+  const posts = () => requests.filter(item => item.method === "POST");
+  try {
+    run("showProject(preloadProject)"); await settle(); await run("pollModel()");
+    assert.equal(posts().length, 0, "opening and polling never preload");
+    assert.equal(nodes["model-preload"].hidden, false); assert.equal(nodes["model-preload"].disabled, false);
+    nodes.question.value = "PRELOAD_DRAFT"; nodes.question.listeners.input();
+    const staleModel = JSON.parse(JSON.stringify(model)); let returnOldStatus;
+    modelReply = () => new Promise(resolve => {returnOldStatus = resolve;});
+    const oldPoll = run("pollModel()"); modelReply = () => reply(model);
+    const send = nodes["model-preload"].listeners.click();
+    await nodes["model-preload"].listeners.click(); assert.equal(posts().length, 1, "double click cannot send twice");
+    assert.equal(nodes.question.disabled, false); assert.equal(nodes.refresh.disabled, true);
+    await run("openFile(state.project.files[0], state.project.version, 1, 2)");
+    assert.equal(nodes["add-selection"].disabled, false, "preload permits source reading and selection");
+    nodes["add-selection"].listeners.click();
+    const preserved = run("JSON.stringify([state.focus,state.job,state.history,$('question').value])");
+    assert.equal(run("state.focus.length"), 1); assert.equal(nodes.ask.disabled, true);
+    model = loading(1); respond(reply(model)); await send;
+    returnOldStatus(reply(staleModel)); await oldPoll;
+    assert.equal(run("state.model.preload.id"), 1, "old in-flight GET cannot overwrite acknowledged preload");
+    assert.deepEqual(posts()[0], {route: "/api/model/preload", method: "POST", payload: {operation_id: 1}});
+    assert.equal(nodes["model-preload-cancel"].hidden, false); assert.equal(nodes["model-preload-cancel"].disabled, false);
+    assert.equal(nodes.question.disabled, false); assert(nodes["model-note"].textContent.includes("繼續"));
+    model = {...loading(1), state: "idle", release_allowed: true, idle_remaining_seconds: 600, preload: {id: 1, status: "ready"}};
+    await run("pollModel()"); assert.equal(nodes.ask.disabled, false);
+    assert.equal(run("JSON.stringify([state.focus,state.job,state.history,$('question').value])"), preserved);
+    assert.equal(posts().length, 1, "readiness never submits the drafted question");
+    assert.equal(nodes["model-preload"].hidden, true); assert.equal(nodes["model-preload"].disabled, true);
+    await nodes["model-release"].listeners.click();
+    preloadReply = payload => {assert.equal(payload.operation_id, 2); model = loading(2); throw Error("lost accepted reply");};
+    await nodes["model-preload"].listeners.click();
+    assert.equal(run("state.preloadPending"), null); assert.equal(run("state.modelUnknown"), false);
+    assert.equal(posts().length, 3, "lost accepted reply reconciles by GET without a retry");
+    cancelReply = payload => {assert.deepEqual(payload, {operation_id: 2}); throw Error("lost cancel reply");};
+    await nodes["model-preload-cancel"].listeners.click();
+    assert.equal(run("state.preloadPending.cancel"), true); assert.equal(run("state.modelUnknown"), true);
+    assert.equal(nodes["model-preload-cancel"].disabled, true); assert.equal(nodes.question.disabled, false);
+    await nodes["model-preload-cancel"].listeners.click(); assert.equal(posts().length, 4, "same running ID does not confirm a lost cancel");
+    model.preload.status = "cancelling"; await run("pollModel()");
+    assert.equal(run("state.preloadPending"), null); assert.equal(nodes["model-preload-cancel"].disabled, true);
+    assert.equal(posts().length, 4); assert(nodes["model-label"].textContent.includes("取消"));
+    model = unloaded(2, "cancelled"); await run("pollModel()");
+    preloadReply = payload => {assert.equal(payload.operation_id, 3); throw Error("unknown admission");};
+    await nodes["model-preload"].listeners.click();
+    assert.equal(run("state.preloadPending.operation"), 3); assert.equal(run("state.modelUnknown"), true);
+    assert.equal(nodes["model-recheck"].disabled, false); assert.equal(nodes.question.disabled, false);
+    assert.equal(nodes.ask.disabled, true); assert.equal(nodes.refresh.disabled, true);
+    await nodes["model-preload"].listeners.click(); await nodes["model-recheck"].listeners.click();
+    assert.equal(posts().length, 5, "old unloaded status is not proof an uncertain send failed");
+    model = loading(3); await run("pollModel()"); assert.equal(run("state.preloadPending"), null);
+    model = unloaded(3, "failed"); await run("pollModel()"); assert(nodes["model-note"].textContent.includes("forge8 doctor"));
+    assert.equal(run("JSON.stringify([state.focus,state.job,state.history,$('question').value])"), preserved);
+    for (const invalid of [{id: true, status: "running"}, {id: 0, status: "ready"}, {id: 3, status: "idle"},
+      {id: 3, status: "running", key: "extra"}, {id: 1000001, status: "ready"}]) {
+      model = {...unloaded(), preload: invalid}; await run("pollModel()");
+      assert.equal(run("state.modelUnknown"), true); assert.equal(nodes["model-preload"].disabled, true);
+    }
+    for (const mode of ["one_shot", "browse_only"]) {
+      run(mode === "one_shot" ? "state.project.model_policy.mode='one_shot'" : "state.project.model_policy.mode='resident'; state.project.browse_only=true");
+      nodes["model-preload"].disabled = nodes["model-preload-cancel"].disabled = false;
+      await nodes["model-preload"].listeners.click(); await nodes["model-preload-cancel"].listeners.click();
+      assert.equal(posts().length, 5, "disabled product modes refuse even a programmatic click");
+    }
+  } finally {context.fetch = originalFetch; context.setTimeout = originalTimer;}
+}
 async function checkQuestionTransport(context, nodes) {
   const run = code => vm.runInContext(code, context), original = {fetch: context.fetch, setTimeout: context.setTimeout, clearTimeout: context.clearTimeout};
   const timers = new Map(), requests = [], holds = [], settle = () => new Promise(resolve => setImmediate(resolve));
@@ -3829,7 +3922,7 @@ async function checkScenario(mode) {
   await checkProjectQuestion(context, nodes);
   await checkUnverifiedProse(context, nodes);
   checkPackedSelections(context, nodes);
-  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkGeneratorExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkPairedInputSearch(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
+  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkGeneratorExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkPairedInputSearch(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkModelPreload(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
   assert.deepEqual(stored, [["forge8.read.token.v1", "test"]], "pasted logs must not enter browser storage");
 }
 (async () => {

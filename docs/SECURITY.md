@@ -480,6 +480,18 @@ and reclaims that owned session. A later cancel cannot undo an already publishin
 result. Browser close does not close the desk; Ctrl+C/normal desk close does.
 This is not a parent-death guarantee for SIGKILL/host crash or secure memory erasure.
 
+Explicit preload uses the same full asset checks, authenticated idle-slot check
+and resident owner, without creating a request lease, chat, source request or
+question manifest. It starts the ordinary idle deadline; a zero-request session
+still has a start record and a fully checked final receipt with `requests: []`.
+Browsing and drafting remain available, but inference, refresh and trials wait.
+Preload is unavailable in browse-only/one-shot mode and cannot renew a loaded model.
+Authenticated POSTs require a monotonic per-desk operation ID; cancel targets that
+exact operation rather than a historical question. Unknown sends use GET-only
+reconciliation, not mutation replay. This uncertainty is page-local, not durable
+across reloads. Desk shutdown cancels and joins the preload worker before closing
+the owner. Preload cancellation does not claim completion until cleanup resolves.
+
 Both `fix` and `explain` create a random per-run llama.cpp API key only after
 their model-free admission/preparation succeeds, hold it in supervisor and
 transport, pass it through `LLAMA_API_KEY`, and send local Authorization headers.

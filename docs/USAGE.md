@@ -31,6 +31,13 @@ Open the private terminal URL. To enable AI later, stop with Ctrl+C, finish
 setup, and restart without both `--browse-only` and `--state` plus its value.
 Closing a browser tab does not stop the desk or release a resident model.
 
+In a resident desk, the model controls offer optional preload before your first
+question. Start it while finding files, selecting code or composing the question.
+This uses GPU memory but makes no AI request. Submit your question explicitly once
+ready; it reuses that loaded model. Preload moves waiting into browsing time—it
+does not make loading or generation faster. Cancel preload with its own control,
+or release the idle model. No preload is available in browse-only or one-shot mode.
+
 ## Read selected code
 
 1. Open a file. Click a line number, then Shift-click the last line, or use the

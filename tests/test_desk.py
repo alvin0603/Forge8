@@ -761,6 +761,29 @@ class ReadingHTTPTests(DeskFixture):
         self.assertEqual(self.request("/api/reading-note")[0], 404)
         self.assertEqual(self.request("/reading-note.js", method="POST", payload={})[0], 404)
 
+    def test_preload_routes_require_explicit_authenticated_post(self):
+        for route, method, expected in (("/api/model/preload", "preload_model", 202),
+                ("/api/model/preload/cancel", "cancel_preload", 200)):
+            with self.subTest(route=route), patch.object(self.desk, method,
+                    return_value={"enabled": True, "preload": {"id": 1, "status": "running"}}) as action:
+                self.assertEqual(self.request(route)[0], 404)
+                for fields, auth, status in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
+                        ({"Origin": "https://evil.invalid"}, True, 403)):
+                    self.assertEqual(self.request(route, method="POST", payload={"operation_id": 1},
+                        headers=fields, auth=auth, headers_only=True)[0], status)
+                action.assert_not_called()
+                status, headers, body = self.request(route, method="POST", payload={"operation_id": 1})
+                self.assertEqual(status, expected)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(json.loads(body)["preload"]["id"], 1)
+                action.assert_called_once_with({"operation_id": 1})
+
+    def test_preload_routes_refuse_one_shot_without_creating_a_worker(self):
+        for route in ("/api/model/preload", "/api/model/preload/cancel"):
+            self.assertEqual(self.request(route, method="POST", payload={"operation_id": 1})[0], 400)
+        self.assertIsNone(self.desk.preload_worker)
+        self.assertEqual(self.desk.status()["status"], "idle")
+
     def test_locate_http_auth_exact_payload_and_shared_cancellation(self):
         payload = {"question": "Where does the workflow start?", "version": self.desk.project["version"]}
         with patch.object(desk_module, "_run_locate_cli") as run:
@@ -901,6 +924,33 @@ class ReadingHTTPTests(DeskFixture):
                 request.join(3)
         self.assertFalse(request.is_alive())
         self.assertEqual(results[0][0], 200)
+
+    def test_disconnected_response_closes_connection_without_an_error_reply(self):
+        handler_type = self.server.RequestHandlerClass
+        for error in (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+            for where in ("headers", "body"):
+                with self.subTest(error=error, where=where):
+                    handler = object.__new__(handler_type)
+                    handler.send_response = Mock()
+                    handler.send_header = Mock()
+                    handler.end_headers = Mock(side_effect=error() if where == "headers" else None)
+                    handler.wfile = Mock()
+                    if where == "body":
+                        handler.wfile.write.side_effect = error()
+                    handler.close_connection = False
+                    handler.send(200, {"accepted": True})
+                    self.assertTrue(handler.close_connection)
+                    handler.send_response.assert_called_once_with(200)
+                    handler.end_headers.assert_called_once_with()
+                    self.assertEqual(handler.wfile.write.call_count, int(where == "body"))
+
+    def test_response_does_not_hide_unrelated_write_errors(self):
+        handler = object.__new__(self.server.RequestHandlerClass)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock(side_effect=OSError("unrelated I/O failure"))
+        with self.assertRaisesRegex(OSError, "unrelated I/O failure"):
+            handler.send(200, {})
 
 
 if __name__ == "__main__":

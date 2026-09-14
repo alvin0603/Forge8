@@ -191,6 +191,21 @@ class ResidentModel:
     def acquire(self, asset_root: Path, *, runtime_manifest_path: Path,
                 model_manifest_path: Path, profile_path: Path,
                 cancel_event: threading.Event, progress=None) -> ResidentLease:
+        return self._prepare_generation(asset_root, runtime_manifest_path=runtime_manifest_path,
+            model_manifest_path=model_manifest_path, profile_path=profile_path,
+            cancel_event=cancel_event, progress=progress, preload=False)
+
+    def preload(self, asset_root: Path, *, runtime_manifest_path: Path,
+                model_manifest_path: Path, profile_path: Path,
+                cancel_event: threading.Event, progress=None) -> dict:
+        """Explicitly prepare an unloaded model without creating a request lease."""
+        return self._prepare_generation(asset_root, runtime_manifest_path=runtime_manifest_path,
+            model_manifest_path=model_manifest_path, profile_path=profile_path,
+            cancel_event=cancel_event, progress=progress, preload=True)
+
+    def _prepare_generation(self, asset_root: Path, *, runtime_manifest_path: Path,
+                model_manifest_path: Path, profile_path: Path,
+                cancel_event: threading.Event, progress, preload: bool):
         options = {"runtime_manifest_path": Path(runtime_manifest_path),
             "model_manifest_path": Path(model_manifest_path), "profile_path": Path(profile_path)}
         assets = Path(asset_root).resolve(strict=True)
@@ -206,6 +221,8 @@ class ResidentModel:
             if self._state not in {"unloaded", "idle"} or self._lease is not None:
                 raise ValueError("resident model is busy")
             generation = self._generation
+            if preload and (self._state != "unloaded" or generation is not None):
+                raise ValueError("resident model is already loaded")
             if generation is not None and identity != generation["identity"]:
                 raise ValueError("release the existing model before changing its identity")
             if generation is not None and len(generation["requests"]) >= 256:
@@ -223,6 +240,8 @@ class ResidentModel:
                     raise ResidentPreparationError(preparation)
                 if _anchors(assets, options)[0] != anchors:
                     raise ValueError("resident model asset preparation failed")
+                if cancel_event.is_set():
+                    raise KeyboardInterrupt("resident acquisition cancelled")
                 parent = self.root / "model-sessions"
                 parent.mkdir(mode=0o700, exist_ok=True)
                 _require_run_entry(parent, directory=True, label="model sessions")
@@ -253,6 +272,8 @@ class ResidentModel:
                 generation["start_pin"] = _file_state(directory, directory / "start.json")
                 if not start.ok:
                     raise ValueError("resident native model did not become ready")
+                if preload and not _slot_idle(supervisor):
+                    raise ValueError("resident model is not alive and idle")
             else:
                 if progress is not None:
                     progress("reusing the verified resident model; checking its idle slot")
@@ -260,6 +281,13 @@ class ResidentModel:
                     raise ValueError("resident model is no longer alive and idle")
             if cancel_event.is_set():
                 raise KeyboardInterrupt("resident acquisition cancelled")
+            if preload:
+                with self._condition:
+                    if cancel_event.is_set():
+                        raise KeyboardInterrupt("resident acquisition cancelled")
+                    self._state, self._deadline = "idle", time.monotonic() + self.idle_timeout
+                    self._condition.notify_all()
+                    return self.status()
             lease = ResidentLease(self, generation, cancel_event)
             with self._condition:
                 self._lease, self._state = lease, "busy"

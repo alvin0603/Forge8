@@ -22,6 +22,7 @@ state.modelUnknown = false;
 state.modelError = "";
 state.modelRequest = 0;
 state.modelReleasePending = false;
+state.preloadPending = null;
 state.modelReceivedAt = 0;
 const pageSize = 200;
 const definitionKinds = {class: "類別", function: "函式", "async function": "非同步函式"};
@@ -42,7 +43,8 @@ let modelTimer, modelCountdownTimer, modelReceiptsRendered = "";
 const active = () => state.pending || ["running", "cancelling", "unknown"].includes(state.job?.status);
 const browseOnly = () => state.project?.browse_only === true;
 const residentEnabled = () => !browseOnly() && state.project?.model_policy?.mode === "resident";
-const modelMutationBlocked = () => residentEnabled() && (!state.model || state.modelUnknown || state.modelReleasePending ||
+const preloadActive = () => ["running", "cancelling"].includes(state.model?.preload?.status);
+const modelMutationBlocked = () => residentEnabled() && (!state.model || state.modelUnknown || state.modelReleasePending || state.preloadPending || preloadActive() ||
   ["checking", "loading", "busy", "releasing", "cleanup_unknown"].includes(state.model.state));
 const experimentsEnabled = () => !browseOnly() && state.project?.experiments_enabled === true;
 const pairedExperiment = target => target?.mode === "head_current";
@@ -357,14 +359,17 @@ function renderModel() {
   if (!enabled) return;
   renderModelReceipts();
   const unknown = state.modelUnknown || !model;
-  const label = state.modelReleasePending ? "正在確認釋放請求" : unknown ? "模型狀態尚未確認" : {
+  const label = state.preloadPending ? "正在確認預載操作" : state.modelReleasePending ? "正在確認釋放請求" : unknown ? "模型狀態尚未確認" :
+    preloadActive() && model.preload.status === "cancelling" ? "正在取消預載" : preloadActive() && model.state === "unloaded" ? "正在準備預載模型" : {
     unloaded: "模型未載入", checking: "正在核對模型", loading: "正在載入模型", busy: "模型正在處理本題",
-    idle: "模型常駐 · 可直接問下一題", releasing: "正在釋放模型", cleanup_unknown: "模型清理尚未確認"
+    idle: "模型常駐 · 可提問", releasing: "正在釋放模型", cleanup_unknown: "模型清理尚未確認"
   }[model.state];
   if ($("model-label").textContent !== label) $("model-label").textContent = label;
   $("model-reader").textContent = Object.hasOwn(readerLabels, model?.reader) ? readerLabels[model.reader] : "本機模型";
-  const note = state.modelError || (unknown ? "正在查詢本機服務；沒有啟動或重送模型工作。" : {
-    unloaded: "提問時才會核對並載入模型；瀏覽原碼不啟動模型。",
+  const note = state.modelError || (unknown ? "正在查詢本機服務；沒有啟動或重送模型工作。" : preloadActive() ?
+    "預載占用 GPU，但不提問。你可以繼續找檔案、選段和輸入問題；完成後再送出。取消會等待清理完成。" : {
+    unloaded: model.preload?.status === "failed" ? "預載失敗，未送出問題。請在終端執行 forge8 doctor 檢查資產，或查看私人工作階段紀錄；不會自動重試。" :
+      "提問時才載入；也可先按預載，再一邊載入一邊閱讀。預載會占用 GPU，瀏覽本身不啟動模型。",
     checking: "完整核對模型與執行環境。問題可用上方按鈕取消。",
     loading: "正在載入已核對的模型；後續問題可沿用這次載入。",
     busy: "本題尚未完成；取消按鈕只針對目前問題。",
@@ -376,9 +381,13 @@ function renderModel() {
   const remaining = !unknown && !state.modelReleasePending && model.state === "idle" && Number.isFinite(model.idle_remaining_seconds) ?
     Math.max(0, Math.ceil(model.idle_remaining_seconds - Math.max(0, Date.now() - state.modelReceivedAt) / 1000)) : null;
   $("model-countdown").textContent = remaining === null ? "" : remaining ? `預計 ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")} 後釋放` : "等待服務確認逾時釋放";
-  $("model-release").disabled = unknown || state.modelReleasePending || !model?.release_allowed || model.state !== "idle" || !model.id || active() || experimentBusy() || state.refreshing;
+  $("model-release").disabled = unknown || state.modelReleasePending || Boolean(state.preloadPending) || preloadActive() || !model?.release_allowed || model.state !== "idle" || !model.id || active() || experimentBusy() || state.refreshing;
+  $("model-preload").hidden = !model?.preload || model.state !== "unloaded" || preloadActive();
+  $("model-preload").disabled = unknown || model?.state !== "unloaded" || !model?.preload || modelMutationBlocked() || active() || experimentBusy() || state.refreshing || state.pairPending || model.preload.id >= 1000000;
+  $("model-preload-cancel").hidden = !preloadActive();
+  $("model-preload-cancel").disabled = unknown || Boolean(state.preloadPending) || model?.preload?.status !== "running";
   $("model-recheck").hidden = !state.modelUnknown && model?.state !== "cleanup_unknown";
-  $("model-recheck").disabled = state.modelReleasePending;
+  $("model-recheck").disabled = state.modelReleasePending || state.preloadPending?.sending === true;
 }
 async function modelApi(path, body) {
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 10000);
@@ -399,8 +408,18 @@ async function pollModel() {
         typeof value.release_allowed !== "boolean" || (value.release_allowed && (value.state !== "idle" || !value.id)) ||
         (value.validation_failed !== undefined && typeof value.validation_failed !== "boolean") ||
         !(value.idle_remaining_seconds === null || (Number.isFinite(value.idle_remaining_seconds) && value.idle_remaining_seconds >= 0 && value.idle_remaining_seconds <= 86400)) ||
-        (value.state !== "idle" && value.idle_remaining_seconds !== null) || !validModelReceipts(value.receipts)) throw new Error("模型狀態或結束紀錄回報不完整；未把未知狀態當作已釋放。");
+        (value.state !== "idle" && value.idle_remaining_seconds !== null) || !validModelReceipts(value.receipts) ||
+        (value.preload !== undefined && !validPreload(value.preload))) throw new Error("模型狀態或結束紀錄回報不完整；未把未知狀態當作已釋放。");
     state.model = value; state.modelUnknown = false; state.modelError = ""; state.modelReceivedAt = Date.now();
+    const pending = state.preloadPending;
+    if (pending && !pending.sending) {
+      if (value.preload && (value.preload.id > pending.operation || value.preload.id === pending.operation &&
+          (!pending.cancel || value.preload.status !== "running"))) state.preloadPending = null;
+      else {
+        state.modelUnknown = true;
+        state.modelError = "尚未確認預載操作是否被接受。只會查詢，不會重送；若持續無法確認，請在原終端停止服務後重開。草稿仍保留。";
+      }
+    }
   } catch (error) {
     if (request === state.modelRequest && state.project === project) {
       state.modelUnknown = true; state.modelError = `${error.message} 既有答案與草稿保留；只會重新查詢，不會重送載入或釋放。`;
@@ -410,7 +429,7 @@ async function pollModel() {
       controls();
       updateModelCountdown();
       // Status reads do not renew the server's idle deadline or load a model.
-      modelTimer = setTimeout(pollModel, state.modelUnknown || ["checking", "loading", "busy", "releasing"].includes(state.model?.state) ? 1000 : 5000);
+      modelTimer = setTimeout(pollModel, state.modelUnknown || preloadActive() || ["checking", "loading", "busy", "releasing"].includes(state.model?.state) ? 1000 : 5000);
     }
   }
 }
@@ -430,7 +449,34 @@ async function releaseModel() {
     if (state.project === project) { state.modelReleasePending = false; controls(); await pollModel(); }
   }
 }
+function validPreload(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 2 &&
+    Number.isSafeInteger(value.id) && value.id >= 0 && value.id <= 1000000 &&
+    (value.id === 0 ? value.status === "idle" : ["running", "cancelling", "ready", "cancelled", "failed"].includes(value.status));
+}
+async function preloadModel(cancel = false) {
+  if (!residentEnabled() || !validPreload(state.model?.preload) || state.preloadPending ||
+      $(cancel ? "model-preload-cancel" : "model-preload").disabled) return;
+  const project = state.project, operation = state.model.preload.id + (cancel ? 0 : 1);
+  state.preloadPending = {operation, cancel, sending: true}; state.modelUnknown = true;
+  state.modelRequest++; clearTimeout(modelTimer); controls();
+  try {
+    const value = await modelApi(cancel ? "/api/model/preload/cancel" : "/api/model/preload", {operation_id: operation});
+    if (!validPreload(value?.preload) || value.preload.id !== operation || cancel && value.preload.status === "running") throw new Error("預載操作回報不完整。");
+    if (state.project === project) state.preloadPending = null;
+  }
+  catch (error) {
+    if (state.project === project) state.modelError = `${error.message} 預載操作尚未確認；只查詢狀態，不重送操作。`;
+  } finally {
+    if (state.project === project) {
+      if (state.preloadPending) state.preloadPending.sending = false;
+      controls(); await pollModel();
+    }
+  }
+}
 $("model-release").addEventListener("click", releaseModel);
+$("model-preload").addEventListener("click", () => preloadModel());
+$("model-preload-cancel").addEventListener("click", () => preloadModel(true));
 $("model-recheck").addEventListener("click", () => { if (!$("model-recheck").disabled) return pollModel(); });
 async function experimentApi(path, body) {
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 10000);
@@ -2128,7 +2174,7 @@ function showProject(project, refreshed = false) {
   state.history = []; state.historyEvicted = 0; state.selectedHistory = null; state.historyLoadedJob = null; state.historyError = ""; state.historyRequest++;
   state.continuation = null; state.continuationNotice = "";
   state.sourceRecovery = null;
-  state.modelRequest++; state.model = null; state.modelUnknown = false; state.modelError = ""; state.modelReleasePending = false;
+  state.modelRequest++; state.model = null; state.modelUnknown = false; state.modelError = ""; state.modelReleasePending = false; state.preloadPending = null;
   clearTimeout(modelTimer); clearTimeout(modelCountdownTimer);
   state.historyBoundary = refreshed ? "已重新讀取專案；先前問答紀錄已清除。" : "";
   $("question-editor").open = true;

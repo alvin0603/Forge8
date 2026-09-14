@@ -65,7 +65,8 @@ Follow the guide to approve setup, then restart without both browse-only flags:
 
 Open `merge_records.py`, select its code, add it to the question, and ask what happens
 when two rows have the same key. Check the answer against its citations.
-The first question loads the model; opening files does not.
+The first question loads the model; opening files does not. You can explicitly
+preload it while browsing and drafting, then submit when ready.
 
 Native WSL GPU reading has run on the reference laptop, but a fresh Linux CUDA
 runtime still requires an advanced local build. It is not a turnkey installation.
