@@ -4,6 +4,11 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const root = path.resolve(__dirname, ".."), app = fs.readFileSync(path.join(root, "src/forge8/web/app.js"), "utf8");
 const html = fs.readFileSync(path.join(root, "src/forge8/web/index.html"), "utf8");
 assert.match(html, /id="ask-project"/, "project questions need an explicit action separate from manual explain and locate");
+const projectActions = html.indexOf('id="project-question-actions"'), discoveryActions = html.indexOf('id="ai-discovery-actions"');
+assert(projectActions > html.indexOf('class="question-actions"') && projectActions < html.indexOf('id="traceback-tools"'), "project questions stay visible beside the primary question actions");
+assert.equal((html.match(/id="ask-project"/g) || []).length, 1, "relocation must not duplicate the project submission button");
+assert(html.indexOf('id="ask-project"') > projectActions && html.indexOf('id="ask-project-note"') < discoveryActions);
+assert(!html.slice(discoveryActions, html.indexOf('</details>', discoveryActions)).includes('id="ask-project"'), "Locate-only disclosure must not hide the project answer action");
 assert.match(html, /手動最多 3 段，自動選材最多 6 段/);
 assert.match(html, /240 行，兩者字元預算相同/);
 assert.match(html, /id="traceback-locate"[^>]*type="button"/, "pasted traceback navigation must not submit a model question");
@@ -58,7 +63,7 @@ function checkProgressiveDisclosure(context, nodes) {
     run('showProject({name:"simple",version:"v1",reader:"qwen35",files:[{id:"0",path:"a.py",lines:2}],excluded:[]})');
     assert.equal(nodes["question-editor"].open, true, "the primary question editor is ready without another disclosure");
     for (const id of ["ai-discovery-actions", "reading-tools", "selection-budget", "traceback-tools"]) assert.equal(nodes[id].open, false);
-    assert.equal(nodes["ai-discovery-actions"].hidden, false); assert.equal(nodes["traceback-tools"].hidden, false);
+    assert.equal(nodes["project-question-actions"].hidden, false); assert.equal(nodes["ai-discovery-actions"].hidden, false); assert.equal(nodes["traceback-tools"].hidden, false);
     nodes.question.value = "KEEP MY QUESTION";
     run('state.focus=[{file:"0",path:"a.py",start:1,end:2}]');
     const before = run('JSON.stringify([state.focus,state.job,state.history,state.experiment,$("question").value])');
@@ -73,11 +78,15 @@ function checkProgressiveDisclosure(context, nodes) {
     assert(nodes["reading-tools-summary"].textContent.includes("正在回看"));
     run('state.historyError="History unavailable";renderHistory()');
     assert(nodes["reading-tools-summary"].textContent.includes("紀錄讀取失敗")); assert.equal(nodes["reading-tools"].open, false);
+    run("state.project.comparison={};renderReadingMode()");
+    assert.equal(nodes["project-question-actions"].hidden, true, "comparison mode independently hides project questions");
+    run("delete state.project.comparison;renderReadingMode()");
+    assert.equal(nodes["project-question-actions"].hidden, false);
     run('showProject({name:"browse",version:"v1",browse_only:true,reader:null,experiments_enabled:false,files:[{id:"0",path:"a.py",lines:2}],excluded:[]})');
     assert.equal(nodes["traceback-tools"].open, true, "traceback remains a primary accessible action in no-AI mode");
-    assert.equal(nodes["ai-discovery-actions"].hidden, true); assert.equal(nodes["ai-reading-results"].hidden, true);
+    assert.equal(nodes["project-question-actions"].hidden, true); assert.equal(nodes["ai-discovery-actions"].hidden, true); assert.equal(nodes["ai-reading-results"].hidden, true);
     run('state.project.comparison={};renderReadingMode()');
-    for (const id of ["ai-discovery-actions", "traceback-tools", "selection-budget"]) assert.equal(nodes[id].hidden, true, "comparison must not leave an empty unsupported tool disclosure");
+    for (const id of ["project-question-actions", "ai-discovery-actions", "traceback-tools", "selection-budget"]) assert.equal(nodes[id].hidden, true, "comparison must not leave unsupported project actions or disclosures");
     assert.equal(requests, 0, "disclosure and mode rendering never trigger network requests");
   } finally { context.fetch = originalFetch; }
 }
@@ -933,6 +942,8 @@ async function checkProjectQuestion(context, nodes) {
   nodes.question.value=""; run("showProject(projectFixture)"); assert(nodes["ask-project"].disabled);
   const question="  陌生專案問題\n\t不提供函式名稱。  "; nodes.question.value=question; nodes.question.listeners.input();
   assert.equal(nodes["ask-project"].disabled,false); assert(nodes.ask.disabled);
+  assert.equal(run("state.focus.length"),0); assert.equal(nodes["project-question-actions"].hidden,false);
+  assert.equal(nodes["ai-discovery-actions"].open,false,"project answering must not require opening Locate-only tools");
   run('state.focus=[{file:"0",path:"entry.py",start:1,end:2}]; renderSelections()');
   const manual=run("JSON.stringify(state.focus)");
   await nodes["ask-project"].listeners.click(); await new Promise(resolve=>setImmediate(resolve));
@@ -2786,6 +2797,8 @@ async function checkSourceContinuation(context, nodes) {
   assert.equal(manual(), beforeFocus); assert.equal(nodes.question.value, rawQuestion); assert.equal(nodes.answer.textContent, beforeAnswer);
   assert.equal(run("state.source"), beforeSource); assert.equal(run("JSON.stringify(state.history)"), beforeHistory);
   assert(nodes["ask-project"].disabled && nodes.locate.disabled, "continuation must not quietly switch into rediscovery");
+  const beforeProjectClick = requests.length; await nodes["ask-project"].listeners.click();
+  assert.equal(requests.length, beforeProjectClick, "relocating the project action must preserve its continuation guard");
   assert.equal(nodes.selections.dataset.continuation, "true"); assert.match(nodes["selection-count"].textContent, /沿用 5 段.*手動 1 段未送出/);
   choose(second.id); assert.equal(run("state.continuation.parent_id"), parent.id);
   assert(nodes["continuation-parent"].textContent.includes(parent.question)); assert.equal(requests.length, 0);
@@ -3141,9 +3154,27 @@ async function checkResidentModel(context, nodes) {
   };
   run("showProject(residentProject)"); await settle(); await run("poll()"); await settle();
   assert.equal(nodes["model-status"].hidden, false); assert(nodes["model-label"].textContent.includes("常駐"));
-  assert(nodes["ask-project-note"].textContent.includes("共用常駐")); assert(!nodes["ask-project-note"].textContent.includes("分兩次載入"));
+  const projectNote = "先找原碼再回答，最多 3 次模型請求，可能需要數分鐘。候選可能遺漏相關實作；不會更動手動選段。";
+  assert.equal(nodes["ask-project-note"].textContent, projectNote);
   checkProjectPhaseCopy(true);
   assert(nodes.answer.textContent.includes("RESIDENT_ANSWER")); assert(nodes.answer.textContent.includes("請求層級紀錄"));
+  const questionDetails = () => nodes.answer.querySelectorAll("details").find(node => node.className === "answer-question");
+  const requestNotes = () => nodes.answer.querySelectorAll("p").filter(node => node.className === "request-completion-note muted");
+  const provenanceText = "這是常駐模型的請求層級紀錄，不是已釋放模型的最終收據。完成本題時工作階段清理尚待完成；來源與引用的檢查不代表解讀正確。目前模型狀態另見上方模型列。";
+  const questionDisclosure = questionDetails();
+  assert.equal(Boolean(questionDisclosure.open), false);
+  assert.equal(questionDisclosure.children[0].textContent, "本題問題：A_ORIGINAL_QUESTION");
+  assert.equal(questionDisclosure.children[1].textContent, first.question);
+  assert.equal(requestNotes().length, 1); assert.equal(requestNotes()[0].parentElement, questionDisclosure);
+  assert.equal(requestNotes()[0].textContent, provenanceText, "the complete request provenance remains unchanged inside the existing disclosure");
+  assert.equal(nodes["model-note"].textContent, "仍占顯示記憶體；閒置逾時或按釋放才停止。下一題不帶舊問答。");
+  const beforeDisclosure = requests.length, originalAnswer = JSON.stringify(first.result.outcome.answer);
+  questionDisclosure.open = true; run("controls(); renderViewedAnswer()");
+  assert.equal(requests.length, beforeDisclosure, "opening request provenance must not fetch or submit");
+  await run("poll()"); await settle();
+  assert.equal(questionDetails(), questionDisclosure); assert.equal(questionDisclosure.open, true, "unchanged job polling preserves inspected provenance");
+  assert.equal(requests.slice(beforeDisclosure).filter(item => item.method === "POST").length, 0);
+  assert.equal(JSON.stringify(first.result.outcome.answer), originalAnswer, "disclosure changes cannot rewrite answer or citation bytes");
   assert.equal(run("state.history.length"), 1); assert.equal(nodes["continue-source"].disabled, false);
   nodes.question.value = "PRESERVED_DRAFT"; run('state.focus=[{file:"0",path:"a.py",start:3,end:4}]; renderSelections()');
   await nodes["continue-source"].listeners.click(); nodes["question-editor"].open = true;
@@ -3260,7 +3291,15 @@ async function checkResidentModel(context, nodes) {
     value => {value.request_completion.schema_version = true;}]) {
     const invalid = clone(first); mutate(invalid); emit(invalid);
     assert(!nodes.answer.textContent.includes("RESIDENT_ANSWER")); assert.equal(nodes["continue-source"].disabled, true);
+    const beforeInvalidDisclosure = requests.length;
+    if (questionDetails()) questionDetails().open = true;
+    assert.equal(nodes.answer.querySelectorAll("button").length, 0, "an invalid resident result cannot gain source actions through its disclosure");
+    assert.equal(requests.length, beforeInvalidDisclosure);
   }
+  const unnamed = clone(first); delete unnamed.question; emit(unnamed);
+  assert.equal(questionDetails(), undefined); assert.equal(requestNotes().length, 1);
+  assert.equal(requestNotes()[0].parentElement, nodes.answer, "missing question metadata must not discard request provenance or invent a disclosure");
+  assert.equal(requestNotes()[0].textContent, provenanceText);
   const review = clone(first); review.status = "incomplete"; review.result.ok = false; review.result.status = "stalled";
   Object.assign(review.result.outcome, {status: "stalled", ok: false, answer: null, unverified_prose: "RESIDENT_UNVERIFIED [E9:L1]"});
   emit(review); assert(nodes.answer.textContent.includes("RESIDENT_UNVERIFIED")); assert(nodes.answer.textContent.includes("引用未通過"));
@@ -3301,6 +3340,15 @@ async function checkResidentModel(context, nodes) {
   assert.equal(run("state.job.id"), "resident-b"); assert.equal(nodes["model-release"].disabled, true);
   nodes["history-select"].value = first.id; nodes["history-select"].listeners.change();
   assert(nodes.answer.textContent.includes("RESIDENT_ANSWER"));
+  const historicalDisclosure = questionDetails(), beforeHistoryDisclosure = requests.length;
+  assert.equal(Boolean(historicalDisclosure.open), false); assert.equal(requestNotes()[0].parentElement, historicalDisclosure);
+  historicalDisclosure.open = true;
+  nodes["history-select"].value = ""; nodes["history-select"].listeners.change();
+  assert.equal(requestNotes().length, 0, "an active question must not retain the prior answer's request provenance");
+  nodes["history-select"].value = first.id; nodes["history-select"].listeners.change();
+  assert.notEqual(questionDetails(), historicalDisclosure); assert.equal(Boolean(questionDetails().open), false);
+  assert.equal(requestNotes().length, 1); assert.equal(requestNotes()[0].parentElement, questionDetails());
+  assert.equal(requestNotes()[0].textContent, provenanceText); assert.equal(requests.length, beforeHistoryDisclosure);
   await nodes.cancel.listeners.click(); await settle();
   assert.equal(posts().at(-1).route, "/api/jobs/resident-b/cancel"); assert(nodes.answer.textContent.includes("RESIDENT_ANSWER"));
   assert.equal(nodes.question.value, "PRESERVED_DRAFT");
@@ -3326,7 +3374,7 @@ async function checkResidentModel(context, nodes) {
   const legacyCount = requests.length; run('showProject({name:"legacy",version:"legacy",files:[],excluded:[],model_policy:{mode:"one_shot"}})');
   await run("pollModel()"); run("updateModelCountdown()"); await settle();
   assert.equal(requests.length, legacyCount, "one-shot policy never polls resident state"); assert.equal(nodes["model-status"].hidden, true);
-  assert(nodes["ask-project-note"].textContent.includes("分兩次載入"));
+  assert.equal(nodes["ask-project-note"].textContent, projectNote, "the action description must not infer reloads from the model policy");
   checkProjectPhaseCopy(false);
   run("delete state.project.model_policy"); checkProjectPhaseCopy(false);
   context.fetch = originalFetch; context.setTimeout = originalTimer;
@@ -3571,7 +3619,7 @@ async function checkBrowseOnly() {
   const browseNotice = html.slice(html.indexOf('id="browse-only-notice"'), html.indexOf('id="experiment-enabled"'));
   assert(browseNotice.includes("移除 --browse-only 與 --state 及其路徑後重新啟動一般 read"));
   assert(browseNotice.includes("仍會建立本機原碼快照"), "asset-free browsing must still disclose local source snapshot creation");
-  for (const id of ["ai-reading-results", "ai-discovery-actions", "ask", "change-mode", "model-status", "experiment-enabled", "experiment-panel"]) assert.equal(nodes[id].hidden, true, `${id} is not part of pure browsing`);
+  for (const id of ["ai-reading-results", "project-question-actions", "ai-discovery-actions", "ask", "change-mode", "model-status", "experiment-enabled", "experiment-panel"]) assert.equal(nodes[id].hidden, true, `${id} is not part of pure browsing`);
   assert(nodes["question-label"].textContent.includes("traceback")); assert(nodes["question-editor-summary"].textContent.includes("traceback"));
   assert(!nodes["selection-limits"].textContent.includes("自動選材")); assert(!nodes["selection-limits"].textContent.includes("載入模型"));
   assert.equal(nodes.refresh.disabled, false); assert.equal(nodes.question.disabled, false);

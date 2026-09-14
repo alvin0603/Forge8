@@ -85,7 +85,8 @@ locations without running a model or the failing program.
 
 ## Project questions and follow-ups
 
-The collapsed AI-discovery controls offer optional model-assisted source search.
+Without a selection, use the project-answer button below the question. For
+candidate locations without an answer, expand the separate source-search controls.
 The project-answer action selects candidates before reading them; it does not
 consume the entire project and can miss relevant code. Up to three model requests
 may take minutes; the default resident desk reuses its model. CLI equivalents are

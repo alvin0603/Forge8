@@ -180,13 +180,15 @@
         <label id="question-label" for="question">你想釐清什麼？</label>
         <textarea id="question" rows="4" maxlength="2000" placeholder="例如：這個函式回傳什麼？參數省略或輸入無效時，又會發生什麼？" required></textarea>
         <div class="question-actions"><span id="question-count" class="muted">0 / 2000</span><button id="ask" type="submit" disabled>解釋選取的程式碼 <span aria-hidden="true">↗</span></button></div>
+        <div id="project-question-actions">
+          <button id="ask-project" type="button" class="locate-button" disabled>從專案找程式並回答</button>
+          <p id="ask-project-note" class="muted">先找原碼再回答，最多 3 次模型請求，可能需要數分鐘。候選可能遺漏相關實作；不會更動手動選段。</p>
+        </div>
         <details id="traceback-tools" class="reading-disclosure"><summary>貼上了 traceback？定位原碼</summary>
           <button id="traceback-locate" type="button" class="quiet traceback-button" disabled>從貼上的 traceback 找原碼（不啟動模型）</button>
           <p id="traceback-summary" class="muted" role="status"></p><div id="traceback-results" class="traceback-results"></div>
         </details>
-        <details id="ai-discovery-actions" class="reading-disclosure"><summary>不知道從哪讀？AI 找原碼（較慢）</summary>
-        <button id="ask-project" type="button" class="locate-button" disabled>從專案找程式並回答</button>
-        <p id="ask-project-note" class="muted">不知道檔案也能提問：先定位，再完整讀取候選並回答。最多 3 次模型請求、分兩次載入與釋放；可能需要數分鐘。結果會揭露模型選材，不修改你的手動選段，仍可能漏掉相關實作。</p>
+        <details id="ai-discovery-actions" class="reading-disclosure"><summary>只找閱讀位置（不回答）</summary>
         <button id="locate" type="button" class="quiet locate-button" disabled>不知道從哪讀？AI 幫我找程式</button>
         <p id="locate-note" class="muted">定位會載入本機模型。較大目錄分兩次：先選最多 3 個檔案，再找其中的實作。先檢查候選，再選段解釋；不會自動加入選段或產生答案。</p>
         </details>

@@ -368,7 +368,7 @@ function renderModel() {
     checking: "完整核對模型與執行環境。問題可用上方按鈕取消。",
     loading: "正在載入已核對的模型；後續問題可沿用這次載入。",
     busy: "本題尚未完成；取消按鈕只針對目前問題。",
-    idle: "仍占用顯示記憶體；閒置逾時或按釋放才會停止。下一題不帶入舊問答。",
+    idle: "仍占顯示記憶體；閒置逾時或按釋放才停止。下一題不帶舊問答。",
     releasing: "等待模型停止與清理；原有問題、選段與答案保留。",
     cleanup_unknown: "不能確認程序已停止或清理完成。新的模型工作、試跑與重新讀取已鎖定；請查看終端機。"
   }[model.state]);
@@ -2100,7 +2100,7 @@ function renderReadingMode() {
   $("browse-only-notice").hidden = !browsing;
   $("reading-notice").hidden = browsing;
   $("ai-reading-results").hidden = $("ask").hidden = $("change-mode").hidden = browsing;
-  $("ai-discovery-actions").hidden = browsing || inChanges();
+  $("project-question-actions").hidden = $("ai-discovery-actions").hidden = browsing || inChanges();
   $("traceback-tools").hidden = $("selection-budget").hidden = inChanges();
   $("reader-title").textContent = browsing ? "閱讀工具" : "探索與理解程式碼";
   $("question-editor-summary").textContent = browsing ? "選段與 traceback 導航" : "調整選段與問題";
@@ -2137,7 +2137,7 @@ function showProject(project, refreshed = false) {
   state.sourceRequest++; state.searchRequest++; clearTimeout(pollTimer);
   $("project-name").textContent = project.name; $("project-version").textContent = `${project.comparison ? "比較快照" : "快照"} ${project.version.slice(0, 12)}`;
   $("reader-badge").textContent = browseOnly() ? "純原碼閱讀 · 無 AI" : Object.hasOwn(readerLabels, project.reader) ? readerLabels[project.reader] : "本機模型 · 試用";
-  $("ask-project-note").textContent = residentEnabled() ? "不知道檔案也能提問：先定位，再完整讀取候選並回答。最多 3 次模型請求，共用常駐模型；仍可能需要數分鐘。結果會揭露模型選材，不修改你的手動選段，仍可能漏掉相關實作。" : "不知道檔案也能提問：先定位，再完整讀取候選並回答。最多 3 次模型請求、分兩次載入與釋放；可能需要數分鐘。結果會揭露模型選材，不修改你的手動選段，仍可能漏掉相關實作。";
+  $("ask-project-note").textContent = "先找原碼再回答，最多 3 次模型請求，可能需要數分鐘。候選可能遺漏相關實作；不會更動手動選段。";
   $("source-title").textContent = "選一個檔案，開始閱讀"; $("source-version").textContent = "";
   $("code").replaceChildren(element("p", "從左側開啟檔案，點行號選取想理解的範圍。", "empty-state"));
   $("page-info").textContent = ""; $("page-prev").disabled = $("page-next").disabled = true;
@@ -2206,11 +2206,13 @@ function citationButton(reference, job, label, className = "citation") {
 }
 function appendAnswerQuestion(job) {
   const question = job.question || job.result?.question;
+  let provenance = $("answer");
   if (question) {
     const details = element("details", "", "answer-question");
     details.append(element("summary", `本題問題：${question}`), element("p", question)); $("answer").append(details);
+    provenance = details;
   }
-  if (residentCompletion(job)) $("answer").append(element("p", "這是常駐模型的請求層級紀錄，不是已釋放模型的最終收據。完成本題時工作階段清理尚待完成；來源與引用的檢查不代表解讀正確。目前模型狀態另見上方模型列。", "request-completion-note muted"));
+  if (residentCompletion(job)) provenance.append(element("p", "這是常駐模型的請求層級紀錄，不是已釋放模型的最終收據。完成本題時工作階段清理尚待完成；來源與引用的檢查不代表解讀正確。目前模型狀態另見上方模型列。", "request-completion-note muted"));
   if (job.kind === "continue" && job.continuation && typeof job.continuation.parent_question === "string") $("answer").append(element("p", `本題沿用前題原碼：${job.continuation.parent_question}。未重新定位，也未帶入前題問答。`, "comparison-answer-scope muted"));
   if (job.kind === "continue" && validReadingScope(job)) {
     const box = element("details", "", "project-reading-scope");
