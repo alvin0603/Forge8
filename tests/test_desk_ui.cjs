@@ -333,7 +333,8 @@ function checkTouchSelection(context, nodes) {
   assert.equal(run("state.anchor"), 220, "second button tap cancels extension");
   extend.listeners.click(); gutter(300);
   assert.equal(run("state.anchor"), 220); assert.equal(run("state.end"), 300);
-  assert.equal(nodes["add-selection"].disabled, true); assert(nodes["range-label"].textContent.includes("81 行"));
+  assert.equal(nodes["add-selection"].disabled, false); assert(nodes["range-label"].textContent.includes("81 行"));
+  assert.equal(nodes["add-selection"].textContent, "完整加入 2 段");
   gutter(301, true); assert.equal(run("state.anchor"), 220, "Shift extension stays available");
   for (const setup of ['state.job = {status:"running"}', 'state.refreshing = true', 'state.source.version = "older"']) {
     extend.listeners.click(); assert.equal(run("state.extending"), true);
@@ -369,9 +370,9 @@ async function checkOutline(context, nodes) {
   assert.equal(run("state.focus[0].start"), 195); assert.equal(run("state.focus[0].end"), 208);
   nodes["outline-filter"].value = ""; nodes["outline-filter"].listeners.input();
   const staleButton = buttons()[2]; buttons()[3].listeners.click();
-  assert.equal(run("state.anchor"), null); assert.equal(nodes["add-selection"].disabled, true);
-  assert(nodes["range-label"].textContent.includes("L20–L110，共 91 行"));
-  assert(nodes["range-label"].textContent.includes("自行選取 80 行內"), "oversized definitions must not silently select a clipped prefix");
+  assert.equal(run("state.anchor"), 20); assert.equal(run("state.end"), 110); assert.equal(nodes["add-selection"].disabled, false);
+  assert(nodes["range-label"].textContent.includes("L20–L110 · 91 行"));
+  assert(nodes["range-label"].textContent.includes("完整加入 2 段"), "packable definitions select all lines, never a clipped prefix");
   for (const [line, shiftKey] of [[20, false], [30, true]]) nodes.code.querySelector(`[data-line="${line}"]`).children[0].listeners.click({shiftKey});
   assert.equal(run("state.rangeHint"), ""); nodes["add-selection"].listeners.click(); assert.equal(run("state.focus[1].end"), 30);
   buttons()[0].listeners.click(); nodes["add-selection"].listeners.click(); assert.equal(run("state.focus.length"), 3);
@@ -434,8 +435,8 @@ async function checkDefinitionSearch(context, nodes) {
   assert.equal(run("state.anchor"), 195); assert.equal(run("state.end"), 208); assert.equal(run("state.focus.length"), 0);
   const priorRequests = requests.length; await buttons()[0].listeners.click();
   assert.equal(requests.length, priorRequests, "same-file definition selection reuses loaded source"); assert.equal(run("state.anchor"), 2);
-  await buttons()[2].listeners.click(); assert.equal(run("state.source.path"), "b.py"); assert.equal(run("state.anchor"), null);
-  assert(nodes["range-label"].textContent.includes("共 91 行")); assert.equal(nodes["add-selection"].disabled, true);
+  await buttons()[2].listeners.click(); assert.equal(run("state.source.path"), "b.py"); assert.equal(run("state.anchor"), 20); assert.equal(run("state.end"), 110);
+  assert(nodes["range-label"].textContent.includes("91 行")); assert.equal(nodes["add-selection"].disabled, false);
   assert.equal(run("state.focus.length"), 0, "neither valid nor oversized definitions auto-add evidence");
   run('state.focus = [{file:"0",path:"a.py",start:1,end:2}]; state.job = {id:"in-flight",status:"running",question:"CURRENT_QUESTION"}; renderSelections()');
   const captured = run("JSON.stringify({job:state.job,focus:state.focus})");
@@ -753,8 +754,8 @@ async function checkDiscovery(context, nodes) {
   assert.equal(run("state.anchor"),3); assert.equal(run("state.end"),8); assert.equal(run("state.focus.length"),0);
   nodes["add-selection"].listeners.click(); assert.equal(run("state.focus.length"),1); assert.equal(nodes.ask.disabled,false);
   const focus=run("JSON.stringify(state.focus)");
-  await buttons[1].listeners.click(); assert.equal(run("state.source.path"),"helper.py"); assert.equal(run("state.anchor"),null);
-  assert(nodes["range-label"].textContent.includes("80 行")); assert.equal(run("JSON.stringify(state.focus)"),focus); assert.equal(sent.length,1);
+  await buttons[1].listeners.click(); assert.equal(run("state.source.path"),"helper.py"); assert.equal(run("state.anchor"),5); assert.equal(run("state.end"),110);
+  assert(nodes["range-label"].textContent.includes("完整加入 2 段")); assert.equal(run("JSON.stringify(state.focus)"),focus); assert.equal(sent.length,1);
   const scope={mode:"files_then_definitions",files:["entry.py","helper.py"],total_files:2,total_functions:400,selected_functions:25};
   context.discoveryJob=located("scoped"); context.discoveryJob.result.outcome.scope=scope;
   run("renderJob(discoveryJob)"); assert(nodes.answer.textContent.includes("25 / 400"));
@@ -890,7 +891,8 @@ async function checkProjectQuestion(context, nodes) {
   assert.equal(fallbackScope.textContent.split(candidates[0].name).length-1,1,"each candidate is displayed only as its actionable card");
   assert.equal(fallbackScope.textContent.split(candidates[1].name).length-1,1);
   links=nodes.answer.querySelectorAll("button"); assert.equal(links.length,2); await links[1].listeners.click();
-  assert.equal(run("state.anchor"),null,"oversized whole candidate is not silently clipped or added"); assert.equal(run("JSON.stringify(state.focus)"),manual);
+  assert.equal(run("state.anchor"),candidates[1].start_line,"packable whole candidate is selected without silently adding evidence");
+  assert.equal(run("state.end"),candidates[1].end_line); assert.equal(run("JSON.stringify(state.focus)"),manual);
   context.updated={...fallback,status:"unknown"}; run("renderJob(updated)"); const beforeHeld=requests.length;
   await links[0].listeners.click(); assert.equal(requests.length,beforeHeld,"a held fallback candidate cannot reopen after its job becomes unknown");
   const incomplete=complete("failed-project-answer"); incomplete.status="incomplete"; incomplete.result.ok=false; incomplete.result.status="stalled";
@@ -1058,7 +1060,7 @@ async function checkUnverifiedProse(context, nodes) {
   assert.equal(run("state.anchor"),195); assert.equal(run("state.end"),208);
   await buttons[1].listeners.click(); assert.equal(run("state.source.path"),"helper.py");
   assert.equal(run("state.anchor"),1); assert.equal(run("state.end"),160,"merged observed ranges must not be clipped into invented original selections");
-  assert.equal(nodes["add-selection"].disabled,true); assert(nodes["range-label"].textContent.includes("80 行"));
+  assert.equal(nodes["add-selection"].disabled,false); assert(nodes["range-label"].textContent.includes("完整加入 2 段"));
   assert.equal(nodes.question.value,"MY NEW DRAFT"); assert.equal(run("JSON.stringify(state.focus)"),focus); assert.equal(requests.length,2);
   nodes["question-editor"].open=true; run("renderJob(reviewJob)"); assert.equal(nodes["question-editor"].open,true,"polling preserves manual editor expansion");
   run('renderJob({...reviewJob,status:"unknown"})'); assert.equal(output(),undefined,"lost status clears full unverified output too");
@@ -1102,7 +1104,7 @@ async function checkDefinitionExpansion(context, nodes) {
   assert(note.textContent.includes("Owner.run · L180–L235"),"an exact selected definition offers the next strictly larger parent");
   await button.listeners.click(); assert.equal(run("state.anchor"),180); assert.equal(run("state.end"),235); unchanged();
   assert.equal(button.disabled,true); assert(note.textContent.includes("類別 Owner · L90–L280（191 行）"));
-  assert(note.textContent.includes("超過 80 行，未裁切")); const beforeOversize=place(); await button.listeners.click(); assert.equal(place(),beforeOversize);
+  assert(note.textContent.includes("放不進剩餘 2 段")); const beforeOversize=place(); await button.listeners.click(); assert.equal(place(),beforeOversize);
   await nodes["source-back"].listeners.click(); assert.equal(run("state.anchor"),193); assert.equal(run("state.end"),210);
   await nodes["source-back"].listeners.click(); assert.equal(place(),original,"return restores reversed original selection and page"); unchanged();
   select(207,217); assert(note.textContent.includes("Owner.run · L180–L235"),"the whole range must fit, not only its first endpoint");
@@ -1123,7 +1125,7 @@ async function checkDefinitionExpansion(context, nodes) {
   }
   for (const size of [80,81]) {
     context.boundaryOutline={status:"available",items:[item("boundary",190,189+size)]}; run("state.source.outline=boundaryOutline"); select(198);
-    assert.equal(button.disabled,size>80); assert(note.textContent.includes(`（${size} 行）`));
+    assert.equal(button.disabled,false); assert(note.textContent.includes(`（${size} 行）`));
   }
   context.literalOutline={status:"available",items:[{...inner,name:"<img src=x onerror=alert(1)>",kind:"async function",stub:true}]};
   run("state.source.outline=literalOutline"); select(198); assert(note.textContent.includes("非同步函式 <img")); assert(note.textContent.includes("省略內容")); assert.equal(note.querySelectorAll("img").length,0);
@@ -1146,6 +1148,88 @@ async function checkDefinitionExpansion(context, nodes) {
   assert.equal(requests.length,3,"only initial open and two explicit returns fetch source; expansion never fetches or launches anything");
   select(198); run('showProject({...expandProject,version:"refreshed"})'); const afterRefresh=place(); await button.listeners.click();
   assert.equal(place(),afterRefresh); assert.equal(button.disabled,true); assert.equal(requests.length,3);
+}
+function checkPackedSelections(context, nodes) {
+  const run = code => vm.runInContext(code, context), add = nodes["add-selection"], originalFetch = context.fetch;
+  let requests = 0;
+  context.fetch = async () => { requests++; throw Error("selection packing cannot request or execute anything"); };
+  const focus = () => run("JSON.stringify(state.focus)");
+  const setup = (lines, prior = [{file:"1",path:"prior.py",start:1,end:2}]) => {
+    context.packedLines = lines; context.packedPrior = prior;
+    run('showProject({name:"packing",version:"packing-v1",files:[{id:"0",path:"long.py",lines:packedLines.length},{id:"1",path:"prior.py",lines:2}],excluded:[]}); state.source={file:state.project.files[0],path:"long.py",version:state.project.version,lines:packedLines,outline:{status:"available",items:[]}}; state.focus=packedPrior; state.anchor=state.end=1; renderCode(); renderSelections()');
+    nodes.question.value = "KEEP QUESTION"; nodes["experiment-input"].value = '{"args":["KEEP INPUT"]}';
+    run('state.history=[{id:"retained",question:"KEEP HISTORY"}]; draft={marker:"KEEP DRAFT"}; controls()');
+  };
+  const select = (start, end) => run(`state.anchor=${start}; state.end=${end}; controls()`);
+  const unchangedDrafts = () => {
+    assert.equal(nodes.question.value, "KEEP QUESTION"); assert.equal(nodes["experiment-input"].value, '{"args":["KEEP INPUT"]}');
+    assert.equal(run("state.history[0].question"), "KEEP HISTORY"); assert.equal(run("draft.marker"), "KEEP DRAFT");
+  };
+  try {
+    setup(Array.from({length:300}, (_, index) => `line ${index + 1}`));
+    run('state.source.outline.items=[{name:"long",kind:"function",start_line:159,definition_line:159,end_line:280,stub:false}]; state.anchor=state.end=200; controls()');
+    assert.equal(nodes["expand-definition"].disabled, false);
+    const prior = run("state.focus[0]"); nodes["expand-definition"].listeners.click();
+    assert.equal(run("state.anchor"), 159); assert.equal(run("state.end"), 280);
+    assert.equal(run("state.readingTrail.at(-1).anchor"), 200, "expansion retains the prior reading position");
+    assert.equal(run("state.focus.length"), 1, "expansion does not add evidence or submit a question");
+    assert.equal(add.textContent, "完整加入 2 段"); assert.equal(add.disabled, false);
+    add.listeners.click();
+    assert.equal(run("state.focus[0]"), prior, "existing manual selection objects remain untouched");
+    assert.deepEqual(JSON.parse(focus()), [{file:"1",path:"prior.py",start:1,end:2},
+      {file:"0",path:"long.py",start:159,end:238},{file:"0",path:"long.py",start:239,end:280}]);
+    unchangedDrafts();
+
+    setup(["😀".repeat(2000), "x".repeat(1985), "tail"], []); select(1, 3);
+    assert.equal(add.textContent, "完整加入 2 段"); add.listeners.click();
+    assert.deepEqual(JSON.parse(focus()).map(({start,end}) => ({start,end})), [{start:1,end:2},{start:3,end:3}], "count Unicode characters, line-number gutters and the intervening newline, not UTF-16 code units");
+    assert.equal(run("selectedCharacters(state.source,1,2) + 2 * 7"), 4000); unchangedDrafts();
+
+    setup([...Array(79).fill("x".repeat(48)), "x".repeat(29)], []); select(1,80);
+    assert.equal(run("selectedCharacters(state.source,1,80)"),3900);
+    assert.equal(add.textContent,"完整加入 2 段"); add.listeners.click();
+    assert.deepEqual(JSON.parse(focus()).map(({start,end})=>({start,end})),[{start:1,end:71},{start:72,end:80}],"3,900 raw characters plus 80 gutters cannot become one 4,460-character backend read");
+    assert.deepEqual(JSON.parse(run('JSON.stringify(state.focus.map(item => [...state.source.lines.slice(item.start-1,item.end).map((line,index)=>`${String(item.start+index).padStart(6)}|${line}`).join("\\n")].length))')), [3975,484]);
+    setup(["x".repeat(3993)], []); select(1,1); assert.equal(add.disabled,false);
+    add.listeners.click(); assert.equal(run("state.focus.length"),1,"one line fits exactly 4,000 characters including its gutter");
+
+    setup(Array(240).fill("x"), []); select(1,240); assert.equal(add.textContent,"完整加入 3 段"); add.listeners.click();
+    assert.deepEqual(JSON.parse(focus()).map(({start,end})=>({start,end})),[{start:1,end:80},{start:81,end:160},{start:161,end:240}]);
+    for (const [lines, prior, start, end, note] of [
+      [Array(122).fill("x"), [{file:"1",path:"prior.py",start:1,end:1},{file:"1",path:"prior.py",start:2,end:2}], 1,122,"剩餘 1 段"],
+      [["x".repeat(3000),"y".repeat(3000),"z".repeat(3000)], undefined,1,3,"剩餘 2 段"],
+      [["ok","x".repeat(4001)], undefined,1,2,"L2 單行含行號超過"],
+      [["x".repeat(3994)], [],1,1,"L1 單行含行號超過"],
+      [Array(241).fill("x"), [],1,241,"剩餘 3 段"],
+    ]) {
+      setup(lines,prior); select(start,end); const before=focus();
+      assert.equal(add.disabled,true); assert(nodes["range-label"].textContent.includes(note));
+      add.listeners.click(); assert.equal(focus(),before,"capacity failure must not add even an initial valid chunk");
+      assert.equal(run(`packSourceRange(state.source.lines,${start},${end},3-state.focus.length).chunks.length`),0); unchangedDrafts();
+    }
+
+    setup(Array(100).fill("x"), [{file:"0",path:"long.py",start:1,end:80}]); select(1,100);
+    const duplicate = focus(); assert.equal(add.disabled,false); add.listeners.click();
+    assert.equal(focus(),duplicate,"one duplicate chunk rejects the whole operation, not just that chunk");
+    assert(nodes.error.textContent.includes("原有選段未變動"));
+
+    for (const mutation of ['state.anchor=2','state.end=99','state.source={...state.source}',
+      'state.source.version="stale"','state.project={...state.project,version:"stale"}',
+      'state.focus=[...state.focus,{file:"1",path:"prior.py",start:2,end:2}]']) {
+      setup(Array(100).fill("x")); select(1,100); assert.equal(add.disabled,false);
+      run(mutation); const before=focus(); add.listeners.click(); assert.equal(focus(),before,"a stale Add preview cannot apply changed source, endpoints, version or manual selections");
+      unchangedDrafts();
+    }
+
+    setup(Array(100).fill("x"), []);
+    run('state.project.comparison={head:"a".repeat(40)}; state.source.path="before/long.py"'); nodes["change-slot"].value="before";
+    select(1,81); assert.equal(add.disabled,true); add.listeners.click(); assert.equal(focus(),"[]");
+    select(1,80); assert.equal(add.disabled,false); add.listeners.click();
+    assert.deepEqual(JSON.parse(focus()),[{file:"0",path:"before/long.py",start:1,end:80,role:"before"}],"comparison roles remain single bounded ranges");
+    setup(Array(100).fill("x"), []); run("state.project.browse_only=true"); select(1,81);
+    assert.equal(add.disabled,true,"browse-only name navigation retains its existing one-range limit");
+    assert.equal(requests,0);
+  } finally { context.fetch=originalFetch; run("draft=null"); }
 }
 async function checkTraceback(context, nodes) {
   const run = code => vm.runInContext(code, context), button = nodes["traceback-locate"], results = nodes["traceback-results"], requests = [];
@@ -1398,6 +1482,183 @@ async function checkArchivedSourceNavigation(context, nodes) {
   assert.equal(requests.length, beforeCurrent); assert(nodes.answer.textContent.includes("CURRENT_JOB_PREVIEW"));
   assert.deepEqual(requests, ["/api/history", "/api/source?file=1&version=navigation-v1", "/api/source?file=1&version=navigation-v1"],
     "only history hydration and two explicit source reads occur; the remaining same-file candidate reuses current snapshot data");
+}
+async function checkGeneratorExperiments(context, nodes) {
+  const run = code => vm.runInContext(code, context), originalFetch = context.fetch, requests = [];
+  const reply = value => ({ok: true, json: async () => JSON.parse(JSON.stringify(value))});
+  const deferred = () => {let resolve; const promise = new Promise(done => {resolve = done;}); return {promise, resolve};};
+  const project = {name: "generator fixture", version: "generator-v1", experiments_enabled: true,
+    files: [{id: "0", path: "probe.py", lines: 2}, {id: "1", path: "helper.py", lines: 1}], excluded: []};
+  const target = {file: "0", path: "probe.py", version: project.version, entry: "probe", source_sha256: "a".repeat(64), source_bytes: 36};
+  const input = '{"args":[9007199254740993],"kwargs":{}}\n';
+  const resultText = '{"generator":{"values":[9007199254740993,"<img src=x>"],"stop":"limit"}}';
+  const completed = (id, steps = 3) => ({...target, id, status: "completed", input_text: input, result_text: resultText,
+    elapsed_seconds: 1, source_unchanged: true, runtime_unchanged: true, ...(steps ? {generator_steps: steps} : {})});
+  let current = {id: null, status: "idle"}, held = null, nextId = 0;
+  let runReply = body => {current = {...completed("generator-" + ++nextId, body.generator_steps || 0), status: "running"};
+    delete current.result_text; return reply({id: current.id});};
+  context.fetch = async (route, options) => {
+    const body = options.body === undefined ? undefined : JSON.parse(options.body); requests.push({route, method: options.method, body});
+    if (route === "/api/experiment/current") return held ? held.promise : reply(current);
+    if (route === "/api/experiment/run") return runReply(body);
+    if (route === "/api/experiment/baseline/clear") {
+      assert.deepEqual(body, {id: "ordinary-a", version: project.version, revision: 1});
+      current = {...current, input_comparison: {...current.input_comparison, revision: 2, baseline: null, reason: "no_baseline"}};
+      return reply(current.input_comparison);
+    }
+    throw Error("unexpected generator request: " + route);
+  };
+  context.generatorProject = project; context.generatorTarget = target;
+  const choose = value => {nodes["experiment-generator-steps"].value = String(value); nodes["experiment-generator-steps"].listeners.change();};
+  const count = route => requests.filter(item => item.route === route).length;
+  try {
+    run("showProject(generatorProject,true);state.experiment.target=generatorTarget;state.experiment.baseTarget=generatorTarget;state.experiment.visible=true;renderExperiment()");
+    nodes.question.value = "KEEP QUESTION"; nodes.answer.textContent = "KEEP ANSWER";
+    run("state.focus=[{file:'0',path:'probe.py',start:1,end:2}];renderSelections()");
+    nodes["experiment-input"].value = input; nodes["experiment-input"].listeners.input();
+    const reading = () => run("JSON.stringify([state.focus,state.job,state.history,$('question').value,$('answer').textContent])"), kept = reading();
+    assert.equal(nodes["experiment-generator-steps"].value, "0");
+    assert.equal(nodes["experiment-generator-option"].hidden, false);
+    assert.equal(nodes["experiment-generator-submitted"].hidden, true);
+    assert.match(html, /next\(\).*close\(\).*finally/);
+    assert.match(html, /next\(\) 嘗試次數，不代表已耗盡/);
+    for (const bad of ["13", "-1", "1.5", "", "03", "true"]) {choose(bad); assert.equal(run("state.experiment.generatorDraft"), 0);}
+    choose(3); assert.equal(requests.length, 0, "draft mode never fetches or executes");
+    assert.equal(nodes["experiment-panel"].dataset.generator, "false", "a generator draft does not relabel an ordinary result layout");
+    assert.equal(nodes["experiment-trace-option"].hidden, true); assert.equal(nodes["experiment-trace-lines"].disabled, true);
+    assert.equal(nodes["experiment-modules"].hidden, true); assert.equal(nodes["experiment-module-prepare"].disabled, true);
+    assert.match(nodes["experiment-run"].textContent, /3 次 next\(\).*close\(\)/);
+    await nodes["experiment-run"].listeners.click(); await nodes["experiment-run"].listeners.click();
+    assert.equal(count("/api/experiment/run"), 1);
+    assert.deepEqual(requests.find(item => item.route === "/api/experiment/run").body,
+      {file: "0", version: target.version, entry: "probe", source_sha256: target.source_sha256, input_text: input, allow_execution: true, generator_steps: 3});
+    assert.equal(nodes["experiment-generator-steps"].disabled, true);
+    const panel = nodes["experiment-panel"];
+    panel.scrollTop = 0; panel.clientHeight = 200; panel.scrollHeight = 900;
+    panel.getBoundingClientRect = () => ({top: 100, bottom: 300});
+    nodes["experiment-result"].getBoundingClientRect = () => ({top: 600, bottom: 840});
+    nodes["experiment-output-side"].getBoundingClientRect = () => ({top: 400});
+    current = completed("generator-1"); await run("pollExperiment()");
+    assert.equal(panel.scrollTop, 488, "reveal the current generator result, not the earlier output controls");
+    assert.equal(nodes["experiment-result-text"].textContent, resultText, "never parse/stringify the result's huge integers");
+    assert.equal(nodes["experiment-result-text"].querySelectorAll("img").length, 0);
+    assert.match(nodes["experiment-generator-submitted"].textContent, /3 次 next/);
+    panel.scrollTop = 17;
+    const beforeDraft = requests.length; choose(6);
+    assert.equal(requests.length, beforeDraft); assert.equal(nodes["experiment-input-state"].hidden, false);
+    await run("pollExperiment()"); assert.equal(nodes["experiment-generator-steps"].value, "6");
+    assert.equal(panel.scrollTop, 17, "draft edits and polling do not reveal the same generator result again");
+    delete panel.clientHeight; delete panel.scrollHeight; panel.scrollTop = 0;
+    assert.match(nodes["experiment-generator-submitted"].textContent, /3 次 next/);
+    assert.equal(nodes["experiment-input"].value, input); assert.equal(reading(), kept);
+
+    // Reload recovers a non-preset API limit; a later completed-job GET cannot erase an edited draft.
+    current = completed("generator-reload", 4); run("resetExperiment()"); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nodes["experiment-generator-steps"].value, "4");
+    assert.equal(nodes["experiment-input"].value, input); assert.equal(count("/api/experiment/run"), 1);
+    held = deferred(); const late = run("pollExperiment()"); choose(12); choose(0);
+    current = completed("generator-late", 2); held.resolve(reply(current)); await late; held = null;
+    assert.equal(nodes["experiment-generator-steps"].value, "0", "late recovery must preserve an ABA mode draft");
+    assert.match(nodes["experiment-generator-submitted"].textContent, /2 次 next/);
+    assert.equal(reading(), kept);
+
+    // Exact integer mode and incompatible report combinations are rejected, not normalized.
+    for (const value of [0, 13, -1, 1.5, true, "3", null]) {
+      context.generatorBad = {...target, generator_steps: value};
+      assert.equal(run("validExperimentTarget(generatorBad,generatorProject,true)"), false);
+    }
+    for (const value of [1, 4, 12]) {
+      context.generatorBad = {...target, generator_steps: value};
+      assert.equal(run("validExperimentTarget(generatorBad,generatorProject,true)"), true);
+    }
+    for (const extra of [{trace_lines: true}, {module_set: {}}, {mode: "head_current"}, {search: {}}]) {
+      context.generatorBad = {...target, generator_steps: 3, ...extra};
+      assert.equal(run("validExperimentGenerator(generatorBad)"), false);
+    }
+    context.generatorBad = {...target, generator_steps: 3, trace_lines: false};
+    assert.equal(run("validExperimentGenerator(generatorBad)"), true);
+    assert.equal(run("sameExperimentIdentity(generatorTarget,generatorBad)"), false);
+
+    // A stays visible and explicitly clearable; generator reports cannot become A or produce a verdict.
+    const baseline = {...target, id: "ordinary-a", input_text: input, result_text: '{"kind":"return","value":1}',
+      input_sha256: "b".repeat(64), runtime_sha256: "c".repeat(64), report_sha256: "d".repeat(64), trace_lines: false};
+    current = {...current, input_comparison: {revision: 1, baseline, current_id: current.id, can_pin: false, settling: false,
+      outcome: "unavailable", reason: "current_unavailable", current_report_sha256: null}};
+    await run("pollExperiment()");
+    assert.equal(nodes["experiment-baseline-a"].hidden, false);
+    assert.equal(nodes["experiment-baseline-a-result"].textContent, baseline.result_text);
+    assert.equal(nodes["experiment-baseline-clear"].disabled, false); assert.equal(nodes["experiment-baseline-pin"].disabled, true);
+    assert.match(nodes["experiment-baseline-summary"].textContent, /Generator.*不與 A 比較/);
+    assert.equal(nodes["experiment-panel"].dataset.baseline, "true");
+    assert.equal(nodes["experiment-panel"].dataset.generator, "true");
+    assert.equal(nodes["experiment-generator-steps"].value, "0", "current generator layout survives a next-call draft switched off");
+    const layoutRequests = requests.length, retainedLayout = reading();
+    choose(6); choose(0); run("renderExperiment()");
+    assert.equal(nodes["experiment-panel"].dataset.generator, "true");
+    assert.equal(nodes["experiment-baseline-a"].hidden, false);
+    assert.equal(nodes["experiment-baseline-a-result"].textContent, baseline.result_text);
+    assert.equal(nodes["experiment-result-text"].textContent, resultText);
+    assert.equal(requests.length, layoutRequests); assert.equal(reading(), retainedLayout);
+    context.generatorCurrent = current;
+    for (const extra of [{can_pin: true}, {current_report_sha256: "e".repeat(64)}, {outcome: "same", reason: null}, {reason: "same_run"}]) {
+      context.generatorBad = {...current, input_comparison: {...current.input_comparison, ...extra}};
+      assert.equal(run("validExperimentInputComparison(generatorBad,generatorProject)"), false);
+    }
+    assert.equal(run("validExperimentInputComparison(generatorCurrent,generatorProject)"), true);
+    choose(3); const runsBeforeClear = count("/api/experiment/run");
+    assert.equal(nodes["experiment-run"].disabled, false, "an ordinary A need not be cleared to run a generator");
+    assert.equal(nodes["experiment-baseline-a"].hidden, false); await nodes["experiment-baseline-clear"].listeners.click();
+    assert.equal(count("/api/experiment/run"), runsBeforeClear); assert.equal(nodes["experiment-baseline-a"].hidden, true);
+
+    // Lost admission cannot be reconciled by an old/idle/different-mode response or repeated POST.
+    runReply = () => {throw Error("lost generator reply");};
+    await nodes["experiment-run"].listeners.click(); const sentCount = count("/api/experiment/run");
+    assert.equal(run("state.experiment.unknown"), true); await nodes["experiment-run"].listeners.click();
+    assert.equal(count("/api/experiment/run"), sentCount);
+    current = {id: null, status: "idle"}; await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), true);
+    current = completed("generator-recovered", 4); await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), true); assert.equal(run("state.experiment.job"), null);
+    current = completed("generator-recovered", 3); await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), false); assert.equal(run("state.experiment.job.generator_steps"), 3);
+    current = {...current, generator_steps: 4}; await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), true); assert.equal(run("state.experiment.job.generator_steps"), 3);
+    current = {...current, generator_steps: 3}; await run("pollExperiment()");
+
+    // Turning off does not accidentally resubmit the prior generator mode.
+    choose(0); await nodes["experiment-run"].listeners.click();
+    assert.equal(Object.hasOwn(requests.filter(item => item.route === "/api/experiment/run").at(-1).body, "generator_steps"), false);
+    current = completed("ordinary-recovered", 3); await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), true);
+    current = completed("ordinary-recovered", 0); await run("pollExperiment()");
+    assert.equal(run("state.experiment.unknown"), false); assert.equal(nodes["experiment-generator-steps"].value, "0");
+    assert.match(nodes["experiment-generator-submitted"].textContent, /不推進/);
+    assert.equal(nodes["experiment-panel"].dataset.generator, "false", "an ordinary accepted job restores the original A/B layout");
+
+    current = {...current, input_comparison: {revision: 3, baseline: null, current_id: current.id, can_pin: true, settling: false,
+      outcome: "unavailable", reason: "no_baseline", current_report_sha256: "e".repeat(64)}};
+    await run("pollExperiment()"); assert.equal(nodes["experiment-baseline-pin"].disabled, false);
+    choose(3); assert.equal(nodes["experiment-baseline-pin"].disabled, true, "generator draft cannot pin an earlier ordinary report");
+    choose(0);
+
+    choose(3); run("state.experiment.traceDraft=true;experimentControls()");
+    assert.equal(nodes["experiment-run"].disabled, true); assert.equal(nodes["experiment-generator-steps"].disabled, false);
+    choose(0); assert.equal(run("state.experiment.generatorDraft"), 0, "an incompatible recovered mode can always be turned off");
+    run("state.experiment.traceDraft=false;experimentControls()");
+
+    // Existing trace/module drafts require an explicit return to single-file/no-trace mode.
+    nodes["experiment-trace-lines"].checked = true; nodes["experiment-trace-lines"].listeners.change();
+    choose(3); assert.equal(run("state.experiment.generatorDraft"), 0);
+    nodes["experiment-trace-lines"].checked = false; nodes["experiment-trace-lines"].listeners.change();
+    run("state.experiment.moduleDraft=['1'];experimentControls()");
+    assert.equal(nodes["experiment-generator-option"].hidden, true); choose(3); assert.equal(run("state.experiment.generatorDraft"), 0);
+    run("state.experiment.moduleDraft=[];experimentControls()"); choose(3);
+    runReply = () => ({ok: false, status: 409, json: async () => ({error: "generator source refused"})});
+    await nodes["experiment-run"].listeners.click();
+    assert.equal(run("state.experiment.unknown"), false); assert.equal(run("state.experiment.submission"), null);
+    assert.match(nodes["experiment-status"].textContent, /generator source refused.*服務拒絕試跑/);
+    assert.equal(nodes["experiment-input"].value, input); assert.equal(reading(), kept);
+  } finally { context.fetch = originalFetch; }
 }
 async function checkInlineExperiments(context, nodes) {
   const run = code => vm.runInContext(code, context), requests = [], originalFetch = context.fetch;
@@ -3433,7 +3694,8 @@ async function checkScenario(mode) {
   await checkDiscovery(context, nodes);
   await checkProjectQuestion(context, nodes);
   await checkUnverifiedProse(context, nodes);
-  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkPairedInputSearch(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
+  checkPackedSelections(context, nodes);
+  if (mode === "rejected") { await checkTraceback(context, nodes); await checkDefinitionExpansion(context, nodes); await checkReadingHistory(context, nodes); await checkArchivedSourceNavigation(context, nodes); await checkInlineExperiments(context, nodes); await checkGeneratorExperiments(context, nodes); await checkExperimentBaseline(context, nodes); await checkPairedExperiments(context, nodes); await checkPairedInputSearch(context, nodes); await checkExperimentModules(context, nodes); await checkExperimentCallInputs(context, nodes); await checkSourceContinuation(context, nodes); await checkInsufficientRecovery(context, nodes); await checkResidentModel(context, nodes); await checkQuestionTransport(context, nodes); checkProgressiveDisclosure(context, nodes); }
   assert.deepEqual(stored, [["forge8.read.token.v1", "test"]], "pasted logs must not enter browser storage");
 }
 (async () => {

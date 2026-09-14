@@ -1783,13 +1783,23 @@ def _run_experiment_cli(args: argparse.Namespace) -> int:
                 if module_options:
                     raise ValueError("--trace-lines supports single-file trials only")
                 module_options["trace_lines"] = True
+            if args.generator_steps is not None:
+                if module_options:
+                    raise ValueError("--generator-steps requires a single-file trial without --trace-lines")
+                module_options["generator_steps"] = args.generator_steps
             run_root = _fix_runs_parent(runtime.parent, source_root=args.source.parent.resolve()) / _new_task_id("experiment")
             print("Executing the complete selected module(s), including package initialization, in CPython/WASI, then one JSON call; "
                 "no host project mount, no GPU. 5s guest / 10s worker wait, plus setup/cleanup. Ctrl+C cancels.", file=sys.stderr, flush=True)
+            if args.generator_steps is not None:
+                print(f"Advance the returned generator at most {args.generator_steps} times, then explicitly close it; "
+                    "both next() and close() may execute code. Reaching the step limit does not prove exhaustion.",
+                    file=sys.stderr, flush=True)
             result = run_experiment(runtime, args.source, args.entry, args.input, run_root, allow_execution=True, **module_options)
             execution = result.get("execution") or {}
             code = 0 if (result["source_unchanged"] and result["runtime_unchanged"] and not execution.get("output_limit", False)
-                and (execution.get("host_status"), execution.get("detail")) in (("exited", None), ("guest_exit", 0))) else 2
+                and (execution.get("host_status"), execution.get("detail")) in (("exited", None), ("guest_exit", 0))
+                and (args.generator_steps is None or
+                    result["process_status"] == "passed" and result.get("reported_result") is not None)) else 2
         if args.as_json:
             print(json.dumps(result, ensure_ascii=True, allow_nan=False))
         elif args.experiment_action == "setup":
@@ -1879,6 +1889,8 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_run.add_argument("--module-file", action="append", metavar="PATH", help="repeat for ALL selected relative .py paths, including entry and required __init__.py; at most 4 files / 64 KiB total")
     experiment_run.add_argument("--allow-execution", action="store_true", help="explicitly authorize selected module/package initialization and one function call in the separate WASI environment")
     experiment_run.add_argument("--trace-lines", action="store_true", help="opt in to at most 1000 guest-reported call-phase source line visits; single-file only, no values or model validation")
+    experiment_run.add_argument("--generator-steps", type=int, choices=range(1, 13), metavar="N",
+        help="advance a returned generator at most N times (1-12), then close; single-file only, no tracing; yields are untrusted JSON snapshots")
     for command in (experiment_setup, experiment_run):
         command.add_argument("--runtime", type=Path, help="absolute trusted runtime directory; default uses saved assets, never CWD")
         command.add_argument("--json", action="store_true", dest="as_json", help="machine-readable host status and separate untrusted guest output")

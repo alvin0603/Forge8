@@ -102,9 +102,13 @@ footer { padding: 10px 20px; color: #83948c; font-size: 10px; text-align: right;
 .experiment-module-options { max-height: 150px; overflow: auto; margin: 8px 0; }.experiment-module-options label { display: flex; align-items: flex-start; gap: 7px; font-weight: 400; overflow-wrap: anywhere; }.experiment-module-options input { width: auto; margin: 3px 0 0; flex-shrink: 0; }#experiment-modules > p { margin: 8px 0; }#experiment-module-prepare { margin-top: 6px; font-size: 12px; }
 .experiment-io { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin-top: 10px; }.experiment-io > div { min-width: 0; }
 .experiment-panel[data-mode="head_current"] .experiment-io { grid-template-columns: minmax(0, 1fr); }
-.experiment-panel[data-baseline="true"] .experiment-io { grid-template-columns: minmax(0, 1fr); }
+.experiment-panel[data-baseline="true"]:not([data-generator="true"]) .experiment-io { grid-template-columns: minmax(0, 1fr); }
 .experiment-baseline-grid { min-width: 0; }.experiment-baseline-grid[data-pinned="true"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
 .experiment-baseline-grid > * { min-width: 0; }#experiment-baseline-controls p { overflow-wrap: anywhere; }
+.experiment-panel[data-generator="true"] .experiment-output-side { display: flex; flex-direction: column; }
+.experiment-panel[data-generator="true"] #experiment-baseline-controls { order: 1; }
+.experiment-panel[data-generator="true"] .experiment-baseline-grid { grid-template-columns: minmax(0, 1fr); }
+.experiment-panel[data-generator="true"] #experiment-baseline-b { order: -1; }
 .experiment-pair-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; }
 .experiment-pair-results > section { min-width: 0; }.experiment-pair-results p { overflow-wrap: anywhere; }
 #experiment-search-plan { margin-top: 10px; }#experiment-search-inputs { padding-left: 24px; }#experiment-search-inputs li { overflow-wrap: anywhere; margin-top: 8px; }#experiment-search-current { padding: 8px; border-left: 3px solid #bd8b2c; background: #fff0cd; }#experiment-search-note, #experiment-search-current p { overflow-wrap: anywhere; }

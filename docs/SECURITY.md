@@ -674,6 +674,31 @@ Guest reports remain distinct from host `observe` captures and are never promote
 to trusted observations or automatically fed back as verified prose.
 [Workflow and actual evidence](isolated-experiments.md#inspect-guest-reported-call-line-visits).
 
+## Optional bounded generator consumption
+
+An explicitly authorized single-file trial may supply `generator_steps`, an exact
+integer from 1 to 12 (CLI `--generator-steps`). It is default-off, bound to the
+request/source/raw input, and incompatible with tracing, module sets and paired
+trials. The guest initializes the whole module and calls the entry once, then
+attempts at most that many `next()` calls on an actual Python generator. It never
+probes once more to infer exhaustion. An explicit `close()` follows, including
+after iteration or serialization errors; close failures are reported separately.
+Both iteration and close execute code inside the existing WASI limits.
+
+Each yield and natural return is detached through finite compact JSON, with a
+shared 60 KiB retained-value budget and duplicate normalized-key rejection. This
+is JSON normalization, not preservation of arbitrary Python types or identity.
+The strict host parser checks states, counts and the expected step limit; usable
+reports also require intact source/input/runtime, normal worker completion and
+complete bounded capture. Guest code can still interfere with its own protocol.
+A normal close report does not authenticate cleanup or prevent later interpreter
+finalization. Timeout or cancellation cannot publish partial yields as a result.
+
+Reports stay separate from ordinary returns, traces and model claims. The desk
+preserves an existing A but refuses to pin or compare a generator report. Mode
+changes affect only the next draft; transport recovery uses GET without replay.
+No host target execution, model feedback, new capability or larger limit is added.
+
 ## Optional paired HEAD/current guest trials
 
 Reading and model answers do not authorize execution. A desk explicitly opened with

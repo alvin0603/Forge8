@@ -150,8 +150,22 @@ async function openingRacesAndBounds() {
   const long = harness(); long.project.files[1].lines = 100; long.fixture.source.lines = ["DEFAULT = {}", "def merge_setting(headers):", ...Array(97).fill("    # retained"), "    return headers"];
   long.fixture.source.outline.items[0].end_line = long.fixture.result.matches[0].end_line = 100;
   await search(long); const stable = preserved(long); await hit(long).listeners.click();
+  assert.equal(long.run("state.anchor"), 2); assert.equal(long.run("state.end"), 100);
+  assert.equal(preserved(long), stable, "opening a packable definition does not add it to the question");
+  assert.equal(long.nodes["add-selection"].disabled, false);
+  const requests = long.requests.length;
+  long.nodes["add-selection"].listeners.click();
+  assert.deepEqual(JSON.parse(long.run("JSON.stringify(state.focus)")), [
+    {file: "0", path: "app.py", start: 1, end: 2},
+    {file: "1", path: "http/session.py", start: 2, end: 81},
+    {file: "1", path: "http/session.py", start: 82, end: 100},
+  ]);
+  const full = preserved(long);
+  await hit(long).listeners.click();
   assert.equal(long.run("state.anchor"), null); assert.equal(long.run("state.end"), null);
-  assert(long.run("state.rangeHint").includes("80 行")); assert.equal(preserved(long), stable, "oversized definitions stay browse-only");
+  assert(long.run("state.rangeHint").includes("剩餘 0 段"));
+  assert.equal(preserved(long), full, "a full question cannot receive a clipped definition");
+  assert.equal(long.requests.length, requests, "packing and same-source navigation make no requests");
 }
 
 (async () => {

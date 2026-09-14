@@ -191,6 +191,38 @@ Successful project refresh clears A even when source hashes are unchanged; resta
 the service loses the in-memory baseline. Private trial files remain on disk, but
 there is no trial-history database, batch runner or automatic model feedback.
 
+### Inspect a generator's yields
+
+Calling a generator function only creates a generator; it does not run its body.
+For a single-file trial, expand the optional generator controls and choose **1–12
+steps** before confirming execution. Each step attempts `next()` once. Forge8 then
+explicitly calls `close()`, which can also run code, including `finally` blocks.
+Nothing runs when you merely select a mode.
+
+The result separates `yields`, `iteration`, `serialization` and `close`:
+
+- `limit_reached` means the chosen number of attempts was used, not that the
+  generator is exhausted. There is no extra lookahead call.
+- `exhausted` records natural completion; `return_value` appears only if its
+  serialization succeeds.
+  A delayed iteration exception is reported separately from a close exception.
+- Each value is immediately copied through finite JSON, so later mutation cannot
+  change an earlier yield. Unsupported values, duplicate normalized object keys
+  or more than 60 KiB of retained values stop collection with a serialization error.
+
+The CLI equivalent, with your own source and JSON input:
+
+```text
+forge8 experiment run source.py --entry items --input input.json --allow-execution --generator-steps 3
+```
+
+This mode is default-off and cannot be combined with line tracing, extra project
+modules, paired trials or A/B result comparison. An existing A remains visible
+and clearable; generator results cannot replace it. Editing the step count changes
+only the next-call draft. Reload retrieves the submitted trial without rerunning it.
+The same WASI time, memory and output limits apply to the entire call, iteration
+and close sequence. These are untrusted guest observations, not an AI verdict.
+
 ### Inspect guest-reported call line visits
 
 For an ordinary **single-file** trial, enable the optional line-recording checkbox

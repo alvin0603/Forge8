@@ -37,7 +37,7 @@ const contextReasons = {scope_mapping: "無法可靠對應這次名稱讀取的�
   unsupported_binding: "遇到尚未支援的名稱綁定形式；不推測來源。"};
 const projectContextReasons = {ambiguous: "多個同名宣告", conditional: "條件式宣告", limit: "補充數量／行數上限", unavailable: "無可用靜態宣告清單", capacity: "原碼預算不足"};
 const readerLabels = {qwen35: "Qwen3.5 · 試用", gemma12b: "Gemma 4 12B · 實驗選用"};
-let pollTimer, experimentTimer, polling = false, draft = null, definitionTarget = null, historyRendered = "", continuationRendered = "";
+let pollTimer, experimentTimer, polling = false, draft = null, definitionTarget = null, selectionTarget = null, historyRendered = "", continuationRendered = "";
 let modelTimer, modelCountdownTimer, modelReceiptsRendered = "";
 const active = () => state.pending || ["running", "cancelling", "unknown"].includes(state.job?.status);
 const browseOnly = () => state.project?.browse_only === true;
@@ -87,6 +87,28 @@ function validComparisonJob(job) {
 }
 function selectedCharacters(source, start, end) {
   return [...source.lines.slice(start - 1, end).join("\n")].length;
+}
+function packSourceRange(lines, start, end, slots) {
+  const reject = note => ({chunks: [], note});
+  if (!Array.isArray(lines) || ![start, end, slots].every(Number.isSafeInteger) || start < 1 || end < start || end > lines.length || slots < 0 || slots > 3)
+    return reject("選取座標無效；請重新選取原碼行。");
+  const capacity = () => reject(`完整範圍放不進剩餘 ${slots} 段（每段 80 行／含行號 4,000 字元）；請移除其他選段或縮小範圍，原有選段未變動。`);
+  if (!slots || end - start + 1 > slots * 80) return capacity();
+  const chunks = []; let first = start, characters = 0;
+  for (let line = start; line <= end; line++) {
+    if (typeof lines[line - 1] !== "string") return reject("原碼行不可用；請重新開啟檔案。");
+    // WorkspaceTools.read_text renders each source line as f"{number:>6}|{text}".
+    const length = [...lines[line - 1]].length + Math.max(6, String(line).length) + 1;
+    if (length > 4000) return reject(`L${line} 單行含行號超過 4,000 字元，無法分段；請選取其他範圍，原有選段未變動。`);
+    if (line > first && (line - first >= 80 || characters + 1 + length > 4000)) {
+      chunks.push({start: first, end: line - 1});
+      if (chunks.length >= slots) return capacity();
+      first = line; characters = 0;
+    }
+    characters += length + (line > first ? 1 : 0);
+  }
+  chunks.push({start: first, end});
+  return {chunks, note: chunks.length > 1 ? `完整加入 ${chunks.length} 段，不省略任何行；提問後、模型載入前仍會檢查共用原碼預算。` : ""};
 }
 async function selectComparisonPair(path, before, after) {
   if (active() || state.refreshing || state.pairPending || !inChanges()) return;
@@ -219,8 +241,13 @@ function controls() {
   $("change-mode").disabled = browseOnly() || $("refresh").disabled;
   const role = $("change-slot").value, side = role === "before" ? "before/" : "after/";
   const characters = state.source && range ? selectedCharacters(state.source, Math.min(state.anchor, state.end), Math.max(state.anchor, state.end)) : 0;
-  $("add-selection").disabled = busy || !range || range > 80 || characters > 4000 || (!comparison && state.focus.length >= 3) || state.source?.version !== state.project?.version || (comparison && (!changeRoles.includes(role) || !state.source?.path.startsWith(side)));
-  $("add-selection").textContent = comparison ? `加入／取代${changeRoleLabels[role] || "選段"}` : "加入選段";
+  const packing = !comparison && !browseOnly() && range ? packSourceRange(state.source?.lines, Math.min(state.anchor, state.end), Math.max(state.anchor, state.end), 3 - state.focus.length) : null;
+  const rangeBlocked = packing ? !packing.chunks.length : range > 80 || characters > 4000 || (!comparison && state.focus.length >= 3);
+  $("add-selection").disabled = busy || !range || rangeBlocked || state.source?.version !== state.project?.version || (comparison && (!changeRoles.includes(role) || !state.source?.path.startsWith(side)));
+  $("add-selection").textContent = comparison ? `加入／取代${changeRoleLabels[role] || "選段"}` : packing?.chunks.length > 1 ? `完整加入 ${packing.chunks.length} 段` : "加入選段";
+  $("add-selection").title = packing?.note || "";
+  selectionTarget = $("add-selection").disabled ? null : {project: state.project, source: state.source, version: state.source.version,
+    anchor: state.anchor, end: state.end, focus: [...state.focus], role, chunks: packing?.chunks || [{start: Math.min(state.anchor, state.end), end: Math.max(state.anchor, state.end)}]};
   $("change-slot").disabled = busy; $("clear-change-selections").disabled = busy || !state.focus.length;
   $("change-selection-status").textContent = comparisonIssue() || "三段已就緒。請確認常數、設定與呼叫上下文已選入；缺少的資訊應保持未知，請檢查模型是否做了未證實的推論。";
   $("changes-list").querySelectorAll("button").forEach(button => { button.disabled = button.dataset.available !== "true" || (button.dataset.changePair ? busy : state.pending || state.refreshing); });
@@ -228,7 +255,7 @@ function controls() {
   $("find-selection").disabled = state.pending || state.refreshing || !state.source || state.source.version !== state.project?.version;
   const expansion = containingDefinition();
   definitionTarget = expansion.target ? {source: state.source, version: state.source.version, anchor: state.anchor, end: state.end, target: expansion.target} : null;
-  $("expand-definition").disabled = busy || !definitionTarget || expansion.target.end_line - expansion.target.start_line >= 80;
+  $("expand-definition").disabled = busy || !definitionTarget || !expansion.available;
   $("definition-target").textContent = expansion.note;
   $("expand-definition").title = expansion.note;
   const previous = state.readingTrail.at(-1);
@@ -237,7 +264,7 @@ function controls() {
   if ($("extend-selection").disabled) state.extending = false;
   $("extend-selection").setAttribute("aria-pressed", String(state.extending));
   $("selection-hint").textContent = state.extending ? `從 L${state.anchor} 延伸：請點終點行號（可跨頁）；再按按鈕可取消` : "點行號選起點；Shift＋點擊或按「延伸選取」選終點";
-  $("range-label").textContent = range ? `L${Math.min(state.anchor, state.end)}–L${Math.max(state.anchor, state.end)} · ${range} 行${range > 80 ? "（請縮小至 80 行內）" : characters > 4000 ? "（超過 4,000 字元；請縮小）" : ""}${comparison && !state.source?.path.startsWith(side) ? " · 請改選此角色的版本" : ""}` : state.rangeHint || "尚未選取行";
+  $("range-label").textContent = range ? `L${Math.min(state.anchor, state.end)}–L${Math.max(state.anchor, state.end)} · ${range} 行${packing ? packing.note ? ` · ${packing.note}` : "" : range > 80 ? "（請縮小至 80 行內）" : characters > 4000 ? "（超過 4,000 字元；請縮小）" : ""}${comparison && !state.source?.path.startsWith(side) ? " · 請改選此角色的版本" : ""}` : state.rangeHint || "尚未選取行";
   $("question-count").textContent = `${$("question").value.length} / ${questionLimit()}${tooLong ? " · 原稿保留，請縮短後再送出" : ""}`;
   $("cancel").hidden = !active();
   $("cancel").disabled = !state.job?.id || state.pending || state.job?.status === "cancelling";
@@ -416,7 +443,7 @@ function validExperimentTarget(value, project, requireSize = false) {
     typeof value.entry === "string" && !value.entry.startsWith("__") && /^[_\p{XID_Start}][_\p{XID_Continue}]*$/u.test(value.entry) &&
     typeof value.source_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.source_sha256) &&
     (!requireSize || (Number.isSafeInteger(value.source_bytes) && value.source_bytes > 0 && value.source_bytes <= 65536)) &&
-    validExperimentPair(value, project) && validExperimentModuleSet(value, project);
+    validExperimentPair(value, project) && validExperimentModuleSet(value, project) && validExperimentGenerator(value);
 }
 function validExperimentPair(target, project) {
   if (!pairedExperiment(target)) return target.mode === undefined && !project.comparison &&
@@ -432,8 +459,12 @@ function validExperimentPair(target, project) {
     typeof before.source_sha256 === "string" && /^[0-9a-f]{64}$/.test(before.source_sha256) &&
     Number.isSafeInteger(before.source_bytes) && before.source_bytes > 0 && before.source_bytes <= 65536);
 }
+function validExperimentGenerator(value) {
+  return value.generator_steps === undefined || Number.isSafeInteger(value.generator_steps) && value.generator_steps >= 1 && value.generator_steps <= 12 &&
+    !pairedExperiment(value) && value.module_set === undefined && value.trace_lines !== true && value.search === undefined;
+}
 function sameExperimentIdentity(left, right) {
-  return ["file", "path", "version", "entry", "source_sha256", "mode", "head", "current_snapshot_sha256"].every(key => left[key] === right[key]) &&
+  return ["file", "path", "version", "entry", "source_sha256", "mode", "head", "current_snapshot_sha256", "generator_steps"].every(key => left[key] === right[key]) &&
     (left.trace_lines === true) === (right.trace_lines === true) &&
     JSON.stringify(left.module_set) === JSON.stringify(right.module_set) &&
     (!pairedExperiment(left) || (left.source_bytes === right.source_bytes &&
@@ -579,6 +610,8 @@ function validExperimentInputComparison(job, project = state.project) {
       !["same", "different", "unavailable"].includes(value.outcome) ||
       ![null, "no_baseline", "current_unavailable", "same_run", "source_changed", "runtime_changed", "trace_mode_changed"].includes(value.reason) ||
       value.current_report_sha256 !== null && !sha(value.current_report_sha256)) return false;
+  if (job.generator_steps !== undefined && (value.can_pin || value.current_report_sha256 !== null || value.outcome !== "unavailable" ||
+      !["no_baseline", "current_unavailable"].includes(value.reason))) return false;
   const baseline = value.baseline;
   if (baseline !== null && (!shape(baseline, ["id", "version", "file", "path", "entry", "source_sha256", "source_bytes", "input_text", "input_sha256", "runtime_sha256", "report_sha256", "result_text", "trace_lines"]) ||
       !validJobId(baseline.id) || !validExperimentTarget(baseline, project, true) ||
@@ -626,7 +659,7 @@ function renderExperimentBaseline() {
   $("experiment-baseline-controls").hidden = !visible;
   const blocked = !view?.visible || !supported || !bound || !Number.isSafeInteger(view.baselineRevision) || value.revision >= Number.MAX_SAFE_INTEGER || view?.checking || view?.preparing || experimentBusy() || experimentBaselineBusy() ||
     active() || modelMutationBlocked() || state.refreshing || state.pairPending;
-  $("experiment-baseline-pin").disabled = blocked || !value?.can_pin || baseline?.id === job?.id;
+  $("experiment-baseline-pin").disabled = blocked || !value?.can_pin || baseline?.id === job?.id || Boolean(view?.generatorDraft) || job?.generator_steps !== undefined;
   $("experiment-baseline-pin").textContent = baseline ? "以這次回報取代 A（不執行）" : "固定這次回報為 A（不執行）";
   $("experiment-baseline-clear").hidden = !baseline;
   $("experiment-baseline-clear").disabled = !view?.visible || !visible || !bound || !baseline || view.baselineRevision >= Number.MAX_SAFE_INTEGER || view?.checking || view?.preparing || experimentBusy() || experimentBaselineBusy() ||
@@ -640,11 +673,13 @@ function renderExperimentBaseline() {
     `已保留 A${baseline ? `（${baseline.path} · ${baseline.entry}）` : ""}，但目前準備的入口／模組不同；未將舊回報當成此入口的比較。` : value?.settling ? "試跑仍在完成收尾；待工作程序結束後才能固定或比較。" :
     verdict && value.outcome !== "unavailable" ? `A 與 B 的程式回報${value.outcome === "same" ? "相同" : "不同"} · 未驗證` :
     verdict ? reasons[value.reason] || "尚無可比較的完整回報。" : "A 保留不變；下一次仍需明確執行，草稿不是 B 的已送出輸入。";
+  if (visible && (view?.generatorDraft || job?.generator_steps !== undefined)) $("experiment-baseline-summary").textContent += "\nGenerator 回報不固定為 A，也不與 A 比較；已有 A 保留，可明確清除。";
   if (view?.baselineNotice && !view.baselinePending && !view.baselineUnknown) $("experiment-baseline-summary").textContent += `\n${view.baselineNotice}`;
   const showA = Boolean(visible && compatible && baseline);
   $("experiment-baseline-a").hidden = !showA;
   $("experiment-baseline-grid").dataset.pinned = String(showA);
   $("experiment-panel").dataset.baseline = String(showA);
+  $("experiment-panel").dataset.generator = String(job?.generator_steps !== undefined);
   const text = (id, value) => { if ($(id).textContent !== value) $(id).textContent = value; };
   text("experiment-baseline-a-identity", showA ? `${baseline.path} · ${baseline.entry}\n試跑 ${baseline.id} · 快照 ${baseline.version}\n完整模組 SHA-256 ${baseline.source_sha256}\n輸入 SHA-256 ${baseline.input_sha256}\n執行環境 SHA-256 ${baseline.runtime_sha256}\n私人回報 SHA-256 ${baseline.report_sha256}\n行紀錄：${baseline.trace_lines ? "已要求" : "未要求"}` : "");
   text("experiment-baseline-a-input", showA ? baseline.input_text : "");
@@ -654,7 +689,7 @@ function renderExperimentBaseline() {
   $("experiment-baseline-b-input").hidden = currentInput === null;
   text("experiment-baseline-b-input-text", currentInput === null ? "" : currentInput);
   $("experiment-baseline-b-title").hidden = !showA;
-  text("experiment-baseline-b-title", job?.id === baseline?.id ? "目前回報就是 A；尚未執行 B" : "B · 最近一次手動試跑");
+  text("experiment-baseline-b-title", job?.generator_steps !== undefined ? "Generator · 最近一次手動試跑（不與 A 比較）" : job?.id === baseline?.id ? "目前回報就是 A；尚未執行 B" : "B · 最近一次手動試跑");
   if (showA && job?.id === baseline.id) {
     $("experiment-result").hidden = true; // Keep this current A's logs and line inspector usable.
   }
@@ -735,24 +770,35 @@ function experimentControls() {
     view.callInputRequest = null; view.inputPending = false;
     view.callInputNote = "選取、入口或草稿已變更；未覆蓋輸入。";
   }
-  $("experiment-input-state").hidden = !view?.job || typeof view.job.input_text !== "string" || view.job.input_text === $("experiment-input").value;
+  const generator = view?.generatorDraft || 0, generatorChanged = Boolean(view?.job && (view.job.generator_steps || 0) !== generator);
+  $("experiment-input-state").hidden = !view?.job || typeof view.job.input_text !== "string" || view.job.input_text === $("experiment-input").value && !generatorChanged;
   $("experiment-input").readOnly = busy || Boolean(view?.preparing);
   $("experiment-input-note").textContent = `${inputBytes.toLocaleString()} / 16,384 位元組${inputBytes > 16384 ? " · 超過上限，請縮短；未裁切原稿。" : " · 原文送出，保留大型整數；不自動修正 JSON。"}`;
   const modulesDirty = experimentModulesDirty(), modulesBlocked = paired || inChanges() || !experimentsEnabled() || !view?.baseTarget || view.preparing || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending;
-  const traceAllowed = Boolean(view?.target && !paired && !inChanges() && !view.target.module_set && !(view.moduleDraft || []).length);
+  const single = Boolean(view?.target && !paired && !inChanges() && !view.target.module_set && !(view.moduleDraft || []).length);
+  const generatorAllowed = single && !view?.traceDraft, generatorInvalid = Boolean(generator && (!generatorAllowed || !Number.isSafeInteger(generator) || generator < 1 || generator > 12));
+  $("experiment-generator-option").hidden = !single && !generator;
+  $("experiment-generator-steps").value = String(generator);
+  $("experiment-generator-steps").disabled = !experimentsEnabled() || !view?.target || view.preparing || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || !generator && (!generatorAllowed || modulesDirty);
+  $("experiment-generator-note").hidden = !single && !generator;
+  $("experiment-generator-submitted").hidden = !view?.job || paired || view.job.generator_steps === undefined && !generator;
+  $("experiment-generator-submitted").textContent = view?.job ? `已送出模式：Generator ${view.job.generator_steps ? `最多 ${view.job.generator_steps} 次 next()，最後嘗試 close()` : "不推進"}。上方選單只修改下一次草稿。` : "";
+  const traceAllowed = single && !generator;
   $("experiment-trace-option").hidden = $("experiment-trace-option-note").hidden = !traceAllowed;
   $("experiment-trace-lines").disabled = !traceAllowed || modulesBlocked || modulesDirty;
   $("experiment-trace-lines").checked = view?.traceDraft === true;
   if (modulesDirty) $("experiment-input-state").hidden = false;
-  $("experiment-input-state").textContent = modulesDirty ? "模組選擇已修改；目前回報仍屬先前來源。請展開同專案模組並核對，再明確執行。" : "輸入已修改；目前回報仍屬上次輸入。按執行才會產生新的回報。";
-  $("experiment-run").disabled = !experimentsEnabled() || !view?.target || inChanges() && !paired || modulesDirty || view.preparing || view.searchPending || view.inputPending || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || inputBytes > 16384 || !$("experiment-input").value.trim();
+  $("experiment-input-state").textContent = modulesDirty ? "模組選擇已修改；目前回報仍屬先前來源。請展開同專案模組並核對，再明確執行。" : "輸入或試跑設定已修改；目前回報仍屬上次送出的輸入與設定。按執行才會產生新的回報。";
+  $("experiment-run").disabled = !experimentsEnabled() || !view?.target || inChanges() && !paired || modulesDirty || generatorInvalid || view.preparing || view.searchPending || view.inputPending || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || inputBytes > 16384 || !$("experiment-input").value.trim();
   const searchPlan = currentExperimentSearchPlan(view);
   $("experiment-run").textContent = paired && view?.searchDraft === true ? (searchPlan ?
     `確認上列 ${searchPlan.inputs.length} 組：最多初始化 ${searchPlan.max_initializations} 次完整模組並搜尋（120 秒＋清理）` : "預覽候選輸入（不執行）") : paired ? `依序初始化 HEAD／目前兩份完整模組，各呼叫一次 ${view?.target?.entry || "函式"}` :
     `${view?.target?.module_set ? `匯入所列 ${view.target.module_set.files.length} 份完整模組，再呼叫` : "執行完整模組，再呼叫"} ${view?.target?.entry || "函式"}`;
-  $("experiment-module-prepare").disabled = modulesBlocked;
-  $("experiment-module-filter").disabled = modulesBlocked;
-  $("experiment-module-options").querySelectorAll("input").forEach(box => { box.disabled = modulesBlocked || !box.checked && (view?.moduleDraft || []).length >= 3; });
+  if (generator) $("experiment-run").textContent = `執行完整模組與函式，最多 ${generator} 次 next()，最後嘗試 close()`;
+  $("experiment-modules").hidden = !view?.baseTarget || paired || Boolean(generator);
+  $("experiment-module-prepare").disabled = modulesBlocked || Boolean(generator);
+  $("experiment-module-filter").disabled = modulesBlocked || Boolean(generator);
+  $("experiment-module-options").querySelectorAll("input").forEach(box => { box.disabled = modulesBlocked || Boolean(generator) || !box.checked && (view?.moduleDraft || []).length >= 3; });
   $("experiment-module-note").textContent = modulesDirty ? "模組選擇已變更；先核對後才能執行。目前回報仍屬先前已確認的來源。" : "勾選只調整草稿；核對不執行。清空額外檔案並核對，可返回原本單檔模式。";
   const source = state.source, selected = source?.version === state.project?.version && source?.path.endsWith(".py") &&
     Number.isSafeInteger(state.anchor) && Number.isSafeInteger(state.end) && Math.min(state.anchor, state.end) >= 1 &&
@@ -808,7 +854,7 @@ function renderExperiment() {
     view?.submitting ? "正在送出這次明確授權的試跑，尚待服務確認…" : view?.preparing ? "正在核對完整模組與入口；尚未執行程式碼…" :
     job ? `${labels[job.status] || "狀態不明"}${Number.isFinite(job.elapsed_seconds) ? ` ${Math.floor(job.elapsed_seconds)} 秒。` : ""}${runtimeStatus ? ` ${runtimeStatus}。` : ""}` :
     active() ? "本機模型仍在工作；完成後才能試跑。輸入與原有問題均保留。" : modelMutationBlocked() ? "模型正在切換或清理狀態未確認；請等候或查看模型狀態。輸入草稿保留，尚未試跑。" : "先確認完整模組與 JSON，再按執行；開啟此面板不會執行程式碼。";
-  $("experiment-status").textContent = [phase, view?.error, job?.error,
+  $("experiment-status").textContent = [phase, view?.error, view?.generatorNotice, job?.error,
     paired && job?.status === "running" ? ({checking: "正在核對兩側原碼、輸入與回報完整性。", before: "正在處理 HEAD 版本；目前版本尚未開始。", after: "HEAD 階段已結束，正在處理目前版本。"}[job.phase] || "正在確認配對試跑階段。") : "",
     paired && job?.comparison_unchanged === false && !["running", "cancelling"].includes(job.status) ? "未確認兩側比較來源完整性；沒有形成有效的配對回報比較。" : "",
     job?.source_unchanged === false ? "警告：保留快照或輸入的完整性檢查未通過，不能把回報綁定到上方原碼與輸入。" : "",
@@ -834,8 +880,9 @@ function renderExperiment() {
     const panel = $("experiment-panel"), output = $("experiment-output-side");
     if (panel.clientHeight > 0 && panel.scrollHeight > panel.clientHeight) {
       const bounds = panel.getBoundingClientRect(), resultBounds = $(paired ? "experiment-pair-result" : "experiment-result").getBoundingClientRect();
+      const revealTop = job.generator_steps !== undefined ? resultBounds.top : output.getBoundingClientRect().top;
       if (resultBounds.bottom > bounds.bottom - 12) panel.scrollTop += Math.max(0,
-        Math.min(output.getBoundingClientRect().top - bounds.top - 12, resultBounds.bottom - bounds.bottom + 12));
+        Math.min(revealTop - bounds.top - 12, resultBounds.bottom - bounds.bottom + 12));
     }
   }
 }
@@ -972,7 +1019,7 @@ function resetExperiment(refreshed = false) {
   state.experiment = {target: null, job: null, input: '{"args":[],"kwargs":{}}', visible: recover,
     preparing: false, submitting: false, unknown: recover, checking: false, cancelPending: false,
     error: "", label: "", lastId: null, submission: null, prepareRequest: 0, statusRequest: 0, traceDraft: false, traceRevision: 0,
-    searchDraft: false, searchRevision: 0};
+    searchDraft: false, searchRevision: 0, generatorDraft: 0, generatorRevision: 0};
   $("experiment-input").value = state.experiment.input; $("experiment-logs").open = false;
   $("experiment-enabled").hidden = !experimentsEnabled();
   $("experiment-enabled").textContent = `${refreshed ? "已重新讀取原碼；先前試跑已清除。" : ""}本次已明確開放函式試跑。仍須逐次確認，才會在獨立 WASI 環境執行完整模組；不會自動執行 AI 產生的程式碼。`;
@@ -987,6 +1034,7 @@ async function openExperiment(item, source) {
   invalidateExperimentSearch(view); view.searchDraft = false; view.searchExecutionPlan = null;
   view.baseTarget = {file: source.file.id, path: source.path, version: state.project.version, entry: item.name, ...(inChanges() ? {mode: "head_current"} : {})};
   view.traceDraft = false; view.traceRevision = (view.traceRevision || 0) + 1;
+  view.generatorDraft = 0; view.generatorRevision = (view.generatorRevision || 0) + 1; view.generatorNotice = "";
   view.moduleDraft = []; view.moduleListKey = ""; $("experiment-modules").open = false;
   view.callInputNote = ""; view.callInputSource = null; view.callInputRequest = null; view.inputPending = false;
   $("experiment-call-input").open = false;
@@ -1023,8 +1071,8 @@ async function pollExperiment() {
     const job = await experimentApi("/api/experiment/current");
     if (state.experiment !== view || state.project !== project || request !== view.statusRequest || state.refreshing || view.submitting) return;
     if (job?.id === null && job.status === "idle") {
-      view.job = null; view.unknown = Boolean(view.submission?.search);
-      if (view.submission?.search) view.error = "搜尋送出狀態尚未確認；空閒回覆不代表未受理。只查詢，不重送。";
+      view.job = null; view.unknown = Boolean(view.submission?.search || view.submission?.generator);
+      if (view.unknown) view.error = "試跑送出狀態尚未確認；空閒回覆不代表未受理。只查詢，不重送。";
       else if (view.submission) { view.submission = null; view.error = `服務目前沒有新試跑；沒有重送執行。${view.error}`; }
       else if (!view.target && !view.preparing) view.visible = false;
     } else {
@@ -1036,7 +1084,7 @@ async function pollExperiment() {
           ["cleanup_unknown", "source_unchanged", "runtime_unchanged"].some(key => job[key] !== undefined && typeof job[key] !== "boolean") ||
           !validPairedExperimentReport(job) || !validExperimentTrace(job, project) || !validExperimentSearch(job)) throw new Error("試跑回報的來源或狀態不完整；未展示其他版本或未確認的結果。");
       if (view.submission && job.id === view.submission.previous && !["running", "cancelling"].includes(job.status)) {
-        if (view.submission.search) {view.unknown = true; view.error = "仍是前一次試跑；這次搜尋是否受理尚未確認。只查詢，不重送。";}
+        if (view.submission.search || view.submission.generator) {view.unknown = true; view.error = "仍是前一次試跑；這次是否受理尚未確認。只查詢，不重送。";}
         else {view.submission = null; view.unknown = false; view.error = `服務尚未回報新的試跑；沒有重送執行。${view.error}`;}
       } else {
         if (view.job?.id === job.id && (!sameExperimentIdentity(view.job, job) || view.job.input_text !== job.input_text ||
@@ -1055,6 +1103,8 @@ async function pollExperiment() {
         const preserveDraft = view.job?.id === job.id && view.input !== view.job.input_text;
         if (view.job?.id !== job.id && (view.traceRevision || 0) === traceRevision) view.traceDraft = job.trace_lines === true;
         if (view.job?.id !== job.id && (view.searchRevision || 0) === searchRevision) view.searchDraft = Boolean(job.search);
+        // Recover only an untouched page draft; even an ABA edit must survive late GETs.
+        if (view.job?.id !== job.id && !(view.generatorRevision || 0)) view.generatorDraft = job.generator_steps || 0;
         if (!view.baseTarget || view.job?.id !== job.id) {
           view.baseTarget = {file: job.file, path: job.path, version: job.version, entry: job.entry, ...(pairedExperiment(job) ? {mode: "head_current"} : {})};
           view.moduleDraft = experimentModuleIds(job).filter(id => id !== job.file); view.moduleListKey = "";
@@ -1086,25 +1136,30 @@ async function runExperiment() {
   if (!validExperimentTarget(target, project, true) || new TextEncoder().encode(input).length > 16384) return;
   const searching = pairedExperiment(target) && view.searchDraft === true, searchPlan = searching ? currentExperimentSearchPlan(view) : null;
   if (searching && !searchPlan) return previewExperimentSearch(view);
+  const generator = view.generatorDraft || 0;
+  if (generator && (!validExperimentGenerator({...target, generator_steps: generator, trace_lines: view.traceDraft === true}) ||
+      experimentModulesDirty() || view.moduleDraft?.length || view.searchDraft)) return;
+  const guardedGenerator = Boolean(generator || target.generator_steps !== undefined);
   const tracing = view.traceDraft === true && !pairedExperiment(target) && !target.module_set;
   // A polled target also carries the old result; copy only source identity into the new job.
   const submittedTarget = Object.fromEntries(["file", "path", "version", "entry", "source_sha256", "source_bytes", "mode", "head", "current_snapshot_sha256", "before", "module_set"]
     .filter(key => target[key] !== undefined).map(key => [key, target[key]]));
   if (tracing) submittedTarget.trace_lines = true;
-  view.input = input; view.submitting = true; view.unknown = false; view.error = "";
+  if (generator) submittedTarget.generator_steps = generator;
+  view.input = input; view.submitting = true; view.unknown = false; view.error = ""; view.generatorNotice = "";
   view.searchExecutionPlan = searchPlan;
   if (searchPlan) $("experiment-search-plan").open = false;
-  view.submission = {previous: view.lastId, ...(pairedExperiment(target) || tracing || target.trace_lines === true ? {target: submittedTarget, input} : {}), ...(searchPlan ? {search: searchPlan} : {})}; view.job = null; view.statusRequest++;
+  view.submission = {previous: view.lastId, ...(pairedExperiment(target) || tracing || target.trace_lines === true || guardedGenerator ? {target: submittedTarget, input} : {}), ...(searchPlan ? {search: searchPlan} : {}), ...(guardedGenerator ? {generator: true} : {})}; view.job = null; view.statusRequest++;
   $("experiment-logs").open = false; $("experiment-call-input").open = false; renderExperiment();
   try {
     const job = await experimentApi("/api/experiment/run", {file: target.file, version: target.version, entry: target.entry,
       source_sha256: target.source_sha256, input_text: input, allow_execution: true,
-      ...(tracing ? {trace_lines: true} : {}),
+      ...(tracing ? {trace_lines: true} : {}), ...(generator ? {generator_steps: generator} : {}),
       ...(pairedExperiment(target) ? {mode: "head_current", head: target.head, before_sha256: target.before.source_sha256} : {}),
       ...(searchPlan ? {search: searchPlan.strategy, search_plan_sha256: searchPlan.sha256} : {}),
       ...(target.module_set ? {modules: experimentModuleIds(target), module_set_sha256: target.module_set.sha256} : {})});
     if (state.experiment !== view || state.project !== project) return;
-    if (typeof job?.id !== "string" || !job.id || searchPlan && (!validJobId(job.id) || job.id === view.submission?.previous)) throw new Error("服務未回傳可追蹤的新試跑編號。");
+    if (typeof job?.id !== "string" || !job.id || (searchPlan || guardedGenerator) && (!validJobId(job.id) || job.id === view.submission?.previous)) throw new Error("服務未回傳可追蹤的新試跑編號。");
     view.job = {...submittedTarget, id: job.id, status: "running", input_text: input, elapsed_seconds: 0,
       ...(searchPlan ? {search: {strategy: searchPlan.strategy, plan_sha256: searchPlan.sha256, total: searchPlan.inputs.length, completed: 0,
         case_index: 1, input_text: input, stop_reason: null}} : {}),
@@ -1116,6 +1171,8 @@ async function runExperiment() {
         invalidateExperimentSearch(view);
         view.job = previousJob; view.submission = null; view.unknown = false; view.error = `${error.message} 服務拒絕搜尋；未重送執行。`;
         view.searchError = view.error;
+      } else if (guardedGenerator && error.httpStatus >= 400 && error.httpStatus < 500) {
+        view.job = previousJob; view.submission = null; view.unknown = false; view.generatorNotice = `${error.message} 服務拒絕試跑；未重送執行。`;
       } else { view.unknown = true; view.error = `${error.message} 未重送；正在查詢是否已建立這次試跑。`; }
     }
   } finally {
@@ -1176,6 +1233,14 @@ $("experiment-input").addEventListener("input", () => {
 $("experiment-search-enabled").addEventListener("change", () => {
   const view = state.experiment; if (!view) return;
   if (!$("experiment-search-enabled").disabled) { invalidateExperimentSearch(view); view.searchDraft = $("experiment-search-enabled").checked === true; }
+  experimentControls();
+});
+$("experiment-generator-steps").addEventListener("change", () => {
+  const view = state.experiment, control = $("experiment-generator-steps"); if (!view) return;
+  if (!control.disabled && /^(?:[0-9]|1[0-2])$/.test(control.value) && (control.value === "0" ||
+      !pairedExperiment(view.target) && !inChanges() && !view.target?.module_set && !view.moduleDraft?.length && !view.traceDraft)) {
+    view.generatorDraft = Number(control.value); view.generatorRevision = (view.generatorRevision || 0) + 1;
+  }
   experimentControls();
 });
 $("experiment-trace-lines").addEventListener("change", () => {
@@ -1538,7 +1603,9 @@ function containingDefinition() {
   const nearest = candidates.filter(item => item.end_line - item.start_line + 1 === size);
   if (nearest.length !== 1) return unavailable("有多個同樣大小的包含定義，無法唯一選取；請查看定義清單。");
   const target = nearest[0];
-  return {target, note: `${definitionKinds[target.kind]} ${target.name} · L${target.start_line}–L${target.end_line}（${size} 行）${target.stub ? " · 省略內容" : ""}。${size > 80 ? "超過 80 行，未裁切或更動選取；請手動縮小範圍。" : browseOnly() ? "只擴展反白範圍；要查看名稱來源，請明確加入選段。不代表完整依賴。" : "只擴展選取，不加入提問；不代表完整依賴。"}`};
+  const packing = !inChanges() && !browseOnly() ? packSourceRange(source.lines, target.start_line, target.end_line, 3 - state.focus.length) : null;
+  const available = size <= 80 || Boolean(packing?.chunks.length);
+  return {target, available, note: `${definitionKinds[target.kind]} ${target.name} · L${target.start_line}–L${target.end_line}（${size} 行）${target.stub ? " · 省略內容" : ""}。${!available ? packing?.note || "超過 80 行，未裁切或更動選取；請手動縮小範圍。" : browseOnly() ? "只擴展反白範圍；要查看名稱來源，請明確加入選段。不代表完整依賴。" : `只擴展選取，不加入提問；不代表完整依賴。${packing?.chunks.length > 1 ? `加入時使用 ${packing.chunks.length} 段，包含全部原碼行。` : ""}`}`};
 }
 function rememberReadingPosition() {
   const source = state.source;
@@ -1548,13 +1615,15 @@ function rememberReadingPosition() {
   if (state.readingTrail.length > 40) state.readingTrail.shift();
 }
 function selectDefinition(item, source, remember = true) {
-  if (!source || state.source !== source || state.pending || state.refreshing) return;
+  if (!source || state.source !== source || source.version !== state.project?.version || state.pending || state.refreshing) return;
   state.callSelectionRevision++;
   const size = item.end_line - item.start_line + 1;
-  const rangeHint = size > 80 ? `${item.name}：L${item.start_line}–L${item.end_line}，共 ${size} 行；請自行選取 80 行內的範圍。` : "";
+  const packing = !inChanges() && !browseOnly() ? packSourceRange(source.lines, item.start_line, item.end_line, 3 - state.focus.length) : null;
+  const selectable = size <= 80 || Boolean(packing?.chunks.length);
+  const rangeHint = selectable ? "" : `${item.name}：L${item.start_line}–L${item.end_line}，共 ${size} 行；${packing?.note || "請自行選取 80 行內的範圍。"}`;
   if (remember) rememberReadingPosition();
   state.extending = false; state.page = Math.floor((item.start_line - 1) / pageSize);
-  state.anchor = size <= 80 ? item.start_line : null; state.end = size <= 80 ? item.end_line : null;
+  state.anchor = selectable ? item.start_line : null; state.end = selectable ? item.end_line : null;
   state.rangeHint = rangeHint;
   $("outline").open = false; renderCode(); controls();
   $("code").querySelector(`[data-line="${item.start_line}"]`)?.scrollIntoView({ block: "center" });
@@ -2233,7 +2302,7 @@ function appendDiscoveryCandidates(candidates, job, parent = $("answer")) {
   for (const item of candidates) {
     const file = state.project.files.find(file => file.path === item.path), button = element("button", "", "definition-button discovery-hit");
     button.type = "button"; button.dataset.discovery = "true";
-    button.append(element("strong", item.name), element("small", `${item.path} · L${item.start_line}–${item.end_line}${item.end_line - item.start_line >= 80 ? " · 超過 80 行，需自行選取範圍" : ""}${item.stub ? " · 省略內容" : ""}`));
+    button.append(element("strong", item.name), element("small", `${item.path} · L${item.start_line}–${item.end_line}${item.end_line - item.start_line >= 80 ? " · 完整選取需多段空位" : ""}${item.stub ? " · 省略內容" : ""}`));
     button.addEventListener("click", async () => {
       if (state.pending || state.refreshing || answerJob()?.id !== job.id || state.project?.version !== version) return;
       if (job.kind === "project" && !projectReading(answerJob())) return;
@@ -2629,7 +2698,10 @@ $("source-back").addEventListener("click", async () => {
 $("page-prev").addEventListener("click", () => { if (state.source && state.page > 0) { state.page--; renderCode(); $("code").scrollTop = 0; } });
 $("page-next").addEventListener("click", () => { if (state.source && (state.page + 1) * pageSize < state.source.lines.length) { state.page++; renderCode(); $("code").scrollTop = 0; } });
 $("add-selection").addEventListener("click", () => {
-  if ($("add-selection").disabled) return;
+  const target = selectionTarget;
+  if ($("add-selection").disabled || active() || experimentBusy() || state.refreshing || state.pairPending || !target || target.project !== state.project || target.source !== state.source ||
+      target.version !== state.project?.version || state.source.version !== target.version || target.anchor !== state.anchor || target.end !== state.end || target.role !== $("change-slot").value ||
+      target.focus.length !== state.focus.length || target.focus.some((item, index) => item !== state.focus[index])) return;
   const selection = { file: state.source.file.id, path: state.source.path, start: Math.min(state.anchor, state.end), end: Math.max(state.anchor, state.end) };
   if (inChanges()) {
     selection.role = $("change-slot").value;
@@ -2638,8 +2710,9 @@ $("add-selection").addEventListener("click", () => {
     if (missing) $("change-slot").value = missing;
     showError(""); renderSelections(); return;
   }
-  if (state.focus.some(item => item.file === selection.file && item.start === selection.start && item.end === selection.end)) { showError("這個範圍已經加入選段。"); return; }
-  state.focus.push(selection); showError(""); renderSelections();
+  const selections = target.chunks.map(chunk => ({...selection, ...chunk}));
+  if (selections.some(chunk => state.focus.some(item => item.file === chunk.file && item.start === chunk.start && item.end === chunk.end))) { showError("部分範圍已經加入選段；請移除重複選段再加入，原有選段未變動。"); return; }
+  state.focus = [...state.focus, ...selections]; showError(""); renderSelections();
 });
 function validKeywordDefinitions(result, project) {
   const shape = (value, keys) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -2773,7 +2846,7 @@ async function callSourceAction(view, match, button) {
   // Explicit source/focus/draft/target changes invalidate this GET, including ordinary selection/input ABA.
   const stamp = () => JSON.stringify([state.sourceRequest, state.statusRequest, state.historyRequest, state.readingExportRevision, state.contextRequest,
     state.callSelectionRevision, state.questionRevision, state.pairRequest, state.anchor, state.end, state.page, state.focus, $("question").value, $("change-slot").value,
-    trial?.prepareRequest, trial?.statusRequest, trial?.inputRevision, trial?.traceRevision, trial?.input, $("experiment-input").value, trial?.visible, trial?.moduleDraft,
+    trial?.prepareRequest, trial?.statusRequest, trial?.inputRevision, trial?.traceRevision, trial?.generatorRevision, trial?.input, $("experiment-input").value, trial?.visible, trial?.moduleDraft,
     trial?.job?.id, trial?.job?.status, trial?.job?.result_text, trial?.baseline?.id, trial?.inputComparison?.revision]);
   const captured = stamp(), target = trial?.target, job = trial?.job, baseline = trial?.baseline;
   const current = () => currentCallSearch(view) && view.opening === opening && state.source === source && state.experiment === trial &&

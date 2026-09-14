@@ -22,7 +22,7 @@ import zipfile
 from copy import deepcopy
 from typing import Callable
 
-from ._experiment_worker import ENGINE_OPTIONS, OUTPUT_BYTES
+from ._experiment_worker import ENGINE_OPTIONS, OUTPUT_BYTES, _validate_generator_steps
 from .checks import CheckDefinition, CheckRunner
 from .repository import _read_regular_file, _strict_existing_directory
 from .runtime import (_artifact_path, _check_cancel, _installed_inventory, _is_reparse_point, _relative_manifest_path,
@@ -761,8 +761,72 @@ def verify_experiment_runtime(directory: Path, *,
     return root, pin
 
 
-def reported_result(host: dict | None) -> dict | None:
+def _reported_generator(value, steps: int) -> dict | None:
+    """Validate bounded guest observations, not execution truth or cleanup."""
+    if type(value) is not dict or set(value) != {"generator"}:
+        return None
+    report = value["generator"]
+    required = {"limit", "next_calls", "yields", "iteration", "serialization", "close"}
+    if (type(report) is not dict or set(report) not in (required, required | {"return_value"})
+            or type(report["limit"]) is not int or report["limit"] != steps
+            or type(report["next_calls"]) is not int or not 0 <= report["next_calls"] <= steps
+            or type(report["yields"]) is not list or len(report["yields"]) > steps
+            or not _bounded_json_value(value)):
+        return None
+    count, yielded = report["next_calls"], len(report["yields"])
+    iteration, serialization, close = (report[key] for key in ("iteration", "serialization", "close"))
+    returned = "return_value" in report
+
+    def state(row, status, extra=()):
+        return type(row) is dict and set(row) == {"status", *extra} and row["status"] == status
+
+    def exception(row, status, extra=()):
+        return (state(row, status, ("exception", *extra))
+                and type(row["exception"]) is str and 1 <= len(row["exception"]) <= 80)
+
+    serial_ok = state(serialization, "ok")
+    serial_empty = state(serialization, "not_attempted")
+    return_error = (exception(serialization, "exception", ("phase",))
+                    and serialization["phase"] == "return")
+    yield_error = (exception(serialization, "exception", ("phase", "yield_index"))
+                   and serialization["phase"] == "yield"
+                   and type(serialization["yield_index"]) is int
+                   and serialization["yield_index"] == count)
+    if exception(iteration, "type_error") and iteration["exception"] == "TypeError":
+        valid = (count == yielded == 0 and not returned and serial_empty
+                 and state(close, "not_attempted"))
+    elif count < 1 or not (state(close, "closed") or exception(close, "exception")):
+        return None
+    elif state(iteration, "limit_reached"):
+        valid = count == yielded == steps and serial_ok and not returned
+    elif state(iteration, "exhausted"):
+        valid = (count == yielded + 1 and
+                 (serial_ok and returned or return_error and not returned))
+    elif exception(iteration, "exception"):
+        valid = (count == yielded + 1 and not returned
+                 and (serial_ok if yielded else serial_empty))
+    elif state(iteration, "stopped_for_serialization"):
+        valid = count == yielded + 1 and yield_error and not returned
+    else:
+        return None
+    if not valid:
+        return None
+    values = report["yields"] + ([report["return_value"]] if returned else [])
+    try:
+        size = sum(len(json.dumps(item, ensure_ascii=True, allow_nan=False,
+                                  separators=(",", ":"))) for item in values)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return value if size <= 60 * 1024 else None
+
+
+def reported_result(host: dict | None, *, generator_steps: int | None = None) -> dict | None:
     """Display-only guest protocol. Never promotes output into trusted evidence."""
+    if generator_steps is not None:
+        try:
+            _validate_generator_steps(generator_steps)
+        except ValueError:
+            return None
     if (host is None or host["output_limit"]
             or (host["host_status"], host["detail"]) not in (("exited", None), ("guest_exit", 0))):
         return None
@@ -771,6 +835,14 @@ def reported_result(host: dict | None) -> dict | None:
     candidates = [line[len(marker):] for line in lines if line.startswith(marker)]
     if len(candidates) != 1 or not lines or not lines[-1].startswith(marker):
         return None
+    if generator_steps is not None:
+        if host["host_status"] == "guest_exit" and type(host["detail"]) is not int:
+            return None
+        try:
+            if len(candidates[0].encode("utf-8")) > OUTPUT_BYTES:
+                return None
+        except UnicodeError:
+            return None
     try:
         value = _json(candidates[0])
         json.dumps(value, allow_nan=False)
@@ -780,7 +852,11 @@ def reported_result(host: dict | None) -> dict | None:
             set(value) == {"exception", "message", "phase"}
             and type(value["exception"]) is str and type(value["message"]) is str and type(value["phase"]) is str
             and value["phase"] in {"module_initialization", "call", "serialization"})):
-        return value
+        if generator_steps is None or value.get("phase") in {"module_initialization", "call"}:
+            return value
+        return None
+    if generator_steps is not None:
+        return _reported_generator(value, generator_steps)
     return None
 
 
@@ -955,14 +1031,18 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
                    cancel_requested: Callable[[], bool] | None = None,
                    module_root: Path | None = None, module_files: list[str] | None = None,
                    expected_module_set_sha256: str | None = None,
-                   trace_lines: bool = False) -> dict:
+                   trace_lines: bool = False, generator_steps: int | None = None) -> dict:
     if type(trace_lines) is not bool:
         raise ValueError("trace_lines must be a boolean")
+    if generator_steps is not None:
+        _validate_generator_steps(generator_steps)
     if allow_execution is not True:
         raise ValueError("this executes the whole module and one call; explicit --allow-execution is required")
     module_mode = module_root is not None or module_files is not None or expected_module_set_sha256 is not None
     if trace_lines and module_mode:
         raise ValueError("line tracing supports single-file experiments only")
+    if generator_steps is not None and (trace_lines or module_mode):
+        raise ValueError("generator consumption requires an untraced single-file trial")
     started = time.monotonic()
     _check_cancel(cancel_requested)
     cancel_options = {} if cancel_requested is None else {"cancel_requested": cancel_requested}
@@ -997,6 +1077,8 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
         request, identity = prepare_request(source, entry, inputs)
     if trace_lines:
         request["trace_lines"] = identity["trace_lines"] = True
+    if generator_steps is not None:
+        request["generator_steps"] = identity["generator_steps"] = generator_steps
     if expected_source_sha256 is not None and identity["source_sha256"] != expected_source_sha256:
         raise ValueError("selected source version changed; no execution attempted")
     if expected_input_sha256 is not None and identity["input_sha256"] != expected_input_sha256:
@@ -1068,6 +1150,10 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
                 or sum(len(value.encode("utf-8")) for value in host["guest_output"].values()) > 3 * OUTPUT_BYTES):
             raise ValueError("native worker returned invalid bounded output")
     report["reported_result"] = reported_result(host) if runtime_unchanged and bundle_unchanged else None
+    if generator_steps is not None:
+        report["reported_result"] = (reported_result(host, generator_steps=generator_steps)
+            if (unchanged and runtime_unchanged and bundle_unchanged and process.ok
+                and not process.output_truncated and not process.capture_errors) else None)
     if trace_lines:
         report["reported_trace"] = (_reported_trace(host, request["source"])
             if (unchanged and runtime_unchanged and bundle_unchanged and process.ok

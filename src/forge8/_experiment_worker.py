@@ -29,6 +29,91 @@ GUEST_MEMORY_BYTES = 128 * 1024**2
 GUEST_SECONDS = 5.0
 GUEST_BOOTSTRAP = r'''
 import json, sys, types
+
+
+def consume_generator(result, limit):
+    """Advance at most limit times, snapshot yields, then explicitly close.
+
+    Invoke only inside the existing bounded WASI guest. This function supplies
+    no independent timeout or sandbox and does not serialize arbitrary objects.
+    """
+    import json
+    import types
+
+    if type(limit) is not int or not 1 <= limit <= 12:
+        raise ValueError("generator limit must be an integer from 1 to 12")
+    report = {"limit": limit, "next_calls": 0, "yields": [],
+              "iteration": {"status": "not_started"},
+              "serialization": {"status": "not_attempted"},
+              "close": {"status": "not_attempted"}}
+    if type(result) is not types.GeneratorType:
+        report["iteration"] = {"status": "type_error", "exception": "TypeError"}
+        return {"generator": report}
+
+    def exception_name(error):
+        return type(error).__name__[:80]
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate normalized JSON object key")
+            value[key] = item
+        return value
+
+    remaining = 60 * 1024  # Leave room for the envelope within outer capture.
+
+    def snapshot(value, phase, index=None):
+        nonlocal remaining
+        try:
+            encoded = json.dumps(value, ensure_ascii=True, allow_nan=False,
+                                 separators=(",", ":"))
+            if len(encoded) > remaining:
+                raise ValueError("generator retained JSON exceeds 60 KiB")
+            detached = json.loads(encoded, object_pairs_hook=unique_object)
+        except BaseException as error:
+            report["serialization"] = {"status": "exception", "phase": phase,
+                                       "exception": exception_name(error)}
+            if index is not None:
+                report["serialization"]["yield_index"] = index
+            return False, None
+        remaining -= len(encoded)
+        report["serialization"] = {"status": "ok"}
+        return True, detached
+
+    try:
+        for _ in range(limit):
+            report["next_calls"] += 1
+            try:
+                value = next(result)
+            except StopIteration as stopped:
+                report["iteration"] = {"status": "exhausted"}
+                ok, detached = snapshot(stopped.value, "return")
+                if ok:
+                    report["return_value"] = detached
+                break
+            except BaseException as error:
+                report["iteration"] = {"status": "exception",
+                                       "exception": exception_name(error)}
+                break
+            ok, detached = snapshot(value, "yield", len(report["yields"]) + 1)
+            if not ok:
+                report["iteration"] = {"status": "stopped_for_serialization"}
+                break
+            report["yields"].append(detached)
+        else:
+            report["iteration"] = {"status": "limit_reached"}
+    finally:
+        try:
+            result.close()
+        except BaseException as error:
+            report["close"] = {"status": "exception",
+                               "exception": exception_name(error)}
+        else:
+            report["close"] = {"status": "closed"}
+    return {"generator": report}
+
+
 request = json.loads(sys.argv[1])
 trace_enabled = request.get("trace_lines", False)
 trace_report = None
@@ -98,7 +183,11 @@ try:
     else:
         result = scope[request["entry"]](*request["input"]["args"], **request["input"]["kwargs"])
     phase = "serialization"
-    encoded_result = json.dumps({"return": result}, ensure_ascii=True, allow_nan=False)
+    encoded_result = json.dumps(
+        consume_generator(result, request["generator_steps"])
+        if "generator_steps" in request else {"return": result},
+        ensure_ascii=True, allow_nan=False,
+        **({"separators": (",", ":")} if "generator_steps" in request else {}))
 except BaseException as error:
     encoded_result = json.dumps({"exception": type(error).__name__, "message": str(error), "phase": phase}, ensure_ascii=True)
 if trace_report is not None:
@@ -201,6 +290,11 @@ def compile_runtime(root: Path) -> dict:
             "compile_seconds": time.monotonic() - started}
 
 
+def _validate_generator_steps(value) -> None:
+    if type(value) is not int or not 1 <= value <= 12:
+        raise ValueError("generator_steps must be an integer from 1 to 12")
+
+
 def execute(root: Path, request: dict, cache_pin: dict, *,
             module_bundle: dict | None = None, request_path: Path | None = None) -> dict:
     trace_lines = request.get("trace_lines", False)
@@ -208,6 +302,10 @@ def execute(root: Path, request: dict, cache_pin: dict, *,
         raise ValueError("trace_lines must be a boolean")
     if trace_lines and (module_bundle is not None or "module_bundle" in request):
         raise ValueError("line tracing supports single-file experiments only")
+    if "generator_steps" in request:
+        _validate_generator_steps(request["generator_steps"])
+        if trace_lines or module_bundle is not None or "module_bundle" in request:
+            raise ValueError("generator consumption requires an untraced single-file trial")
     modules = None if module_bundle is None else _module_bundle_directory(request_path, module_bundle)
     if modules is not None:
         request = {**request, "module_bundle": {key: module_bundle[key] for key in ("entry_module", "top_levels")}}

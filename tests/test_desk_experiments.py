@@ -99,6 +99,87 @@ class DeskExperimentTests(fixtures.DeskFixture):
         self.assertEqual(desk.experiment_status(), {"id": None, "status": "idle"})
         self.assert_no_operations()
 
+    def test_generator_steps_bind_original_input_and_preserve_reading_and_baseline(self):
+        payload = {**self.payload(), "generator_steps": 3}
+        previous = self.reading_state()
+        baseline = {"id": "retained-a", "version": self.desk.project["version"]}
+        self.desk._trial_baseline = json.dumps({"view": baseline}).encode()
+        retained = self.desk._trial_baseline
+        result = {"generator": {"limit": 3, "next_calls": 2,
+            "yields": [9007199254740993], "iteration": {"status": "exhausted"},
+            "serialization": {"status": "ok"}, "close": {"status": "closed"}, "return_value": None}}
+        report = self.report()
+        report["reported_result"] = result
+        with patch.object(experiments, "run_experiment", return_value=report) as runner, \
+                patch.object(experiments, "retain_trial_result", side_effect=AssertionError("generator cannot become A")):
+            self.desk.start_experiment(payload)
+            self.join_experiment()
+        job = self.desk.experiment_status()
+        self.assertEqual((job["status"], job["generator_steps"]), ("completed", 3))
+        self.assertEqual(json.loads(job["result_text"]), result)
+        self.assertIn("9007199254740993", job["result_text"])
+        self.assertEqual(job["input_text"], payload["input_text"])
+        self.assertEqual(runner.call_args.kwargs["generator_steps"], 3)
+        self.assertEqual(runner.call_args.kwargs["expected_input_sha256"],
+            hashlib.sha256(payload["input_text"].encode()).hexdigest())
+        self.assertNotIn("trace_lines", runner.call_args.kwargs)
+        self.assertEqual(self.reading_state(), previous)
+        self.assertEqual(self.desk._trial_baseline, retained)
+        self.assertEqual(job["input_comparison"]["baseline"], baseline)
+        self.assertIs(job["input_comparison"]["can_pin"], False)
+        self.assertEqual(job["input_comparison"]["outcome"], "unavailable")
+        self.assertIsNone(job["input_comparison"]["current_report_sha256"])
+        revision = job["input_comparison"]["revision"]
+        with self.assertRaises(ValueError):
+            self.desk.set_trial_baseline({"id": job["id"], "version": job["version"], "revision": revision})
+        self.desk.set_trial_baseline({"id": baseline["id"], "version": baseline["version"], "revision": revision}, clear=True)
+        self.assertIsNone(self.desk._trial_baseline)
+
+    def test_invalid_generator_options_allocate_no_run_or_worker(self):
+        payload = self.payload()
+        before = set(self.desk.root.iterdir())
+        invalid = [{**payload, "generator_steps": value} for value in (None, False, True, 0, 13, 1.0, "2", [], {})]
+        invalid += [{**payload, "generator_steps": 2, **extra} for extra in (
+            {"trace_lines": True}, {"modules": [payload["file"]], "module_set_sha256": "a" * 64},
+            {"mode": "head_current"})]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.desk.start_experiment(value)
+        self.assertEqual(set(self.desk.root.iterdir()), before)
+        self.assert_no_operations()
+
+    def test_cancelled_or_missing_generator_report_cannot_publish_a_result(self):
+        payload = {**self.payload(), "generator_steps": 2}
+        report = self.report()
+        report["reported_result"] = None
+        with patch.object(experiments, "run_experiment", return_value=report):
+            self.desk.start_experiment(payload)
+            self.join_experiment()
+        self.assertEqual(self.desk.experiment_status()["status"], "incomplete")
+        self.assertNotIn("result_text", self.desk.experiment_status())
+        def cancelled(*args, **kwargs):
+            self.desk.experiment_cancel_event.set()
+            return self.report()
+        with patch.object(experiments, "run_experiment", side_effect=cancelled):
+            self.desk.start_experiment(payload)
+            self.join_experiment()
+        job = self.desk.experiment_status()
+        self.assertEqual((job["status"], job["generator_steps"]), ("cancelled", 2))
+        self.assertEqual(job["input_text"], payload["input_text"])
+        self.assertNotIn("result_text", job)
+
+    def test_large_generator_result_keeps_complete_json_within_browser_budget(self):
+        report = self.report()
+        value = {"generator": {"yields": [[0] * 30000]}}
+        report["reported_result"] = value
+        self.assertGreater(len(json.dumps(value, indent=2)), 128 * 1024)
+        with patch.object(experiments, "run_experiment", return_value=report):
+            self.desk.start_experiment({**self.payload(), "generator_steps": 1})
+            self.join_experiment()
+        result = self.desk.experiment_status()["result_text"]
+        self.assertEqual(json.loads(result), value)
+        self.assertLessEqual(len(result.encode()), 128 * 1024)
+
     def test_opt_in_trace_is_separate_from_result_and_bound_to_original_input(self):
         payload = {**self.payload(), "trace_lines": True}
         previous = self.reading_state()

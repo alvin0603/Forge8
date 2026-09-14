@@ -35,15 +35,19 @@ Closing a browser tab does not stop the desk or release a resident model.
 
 1. Open a file. Click a line number, then Shift-click the last line, or use the
    extend-selection control. The definition outline can select a Python function.
-2. Add the selection to the question. Include relevant callers, constants or
-   helpers deliberately.
+2. Add the selection to the question. Longer selections split into the available
+   ranges automatically, keeping every line. Include relevant callers, constants
+   or helpers deliberately.
 3. Write a self-contained question and submit it with the selected-code answer
    button.
 
-Manual input is limited to three ranges, each at most 80 lines / 4,000 characters,
-with at most 240 lines total and a shared 9,000-character source JSON budget.
-Oversized input is refused, not silently clipped. The answer lists its actual
-source scope. Click a citation to inspect that retained source.
+Manual input is limited to three ranges, each at most 80 lines / 4,000 characters
+(including line-number prefixes), with at most 240 lines total and a shared
+9,000-character source JSON budget.
+If the whole selection cannot fit, existing selections stay unchanged. The shared
+budget is checked before loading the model; input is never silently clipped.
+The answer lists its actual source scope. Click a citation to inspect that
+retained source.
 
 For a CLI question after Qwen setup:
 

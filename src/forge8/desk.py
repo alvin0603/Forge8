@@ -661,13 +661,20 @@ class ReadingDesk:
             return self._start_paired_experiment(payload)
         expected = {"file", "version", "entry", "source_sha256", "input_text", "allow_execution"}
         shapes = (expected, expected | {"modules", "module_set_sha256"})
-        if (type(payload) is not dict or set(payload) not in (*shapes, *(shape | {"trace_lines"} for shape in shapes))
+        if (type(payload) is not dict or set(payload) - {"trace_lines", "generator_steps"} not in shapes
                 or payload["allow_execution"] is not True):
             raise ValueError("explicit whole-module execution consent and an exact target are required")
         trace_lines = payload.get("trace_lines", False)
         if type(trace_lines) is not bool or trace_lines and "modules" in payload:
             raise ValueError("trace_lines must be a boolean; line visits support single-file trials only")
-        trace_options = {"trace_lines": True} if trace_lines else {}
+        generator_steps = payload.get("generator_steps")
+        if "generator_steps" in payload and (type(generator_steps) is not int or not 1 <= generator_steps <= 12):
+            raise ValueError("generator_steps must be an integer from 1 to 12")
+        if generator_steps is not None and (trace_lines or "modules" in payload):
+            raise ValueError("generator steps require a single-file trial without line tracing")
+        execution_options = {"trace_lines": True} if trace_lines else {}
+        if generator_steps is not None:
+            execution_options["generator_steps"] = generator_steps
         with self.lock:
             if self._busy():
                 raise ValueError("only one model question or isolated experiment may run at a time")
@@ -704,12 +711,12 @@ class ReadingDesk:
             self.experiment_started = started
             self._trial_candidate = None
             self.experiment = {**target, "id": identifier, "status": "running",
-                "input_text": payload["input_text"], "elapsed_seconds": 0.0, **trace_options}
+                "input_text": payload["input_text"], "elapsed_seconds": 0.0, **execution_options}
 
             def run():
                 try:
                     manifest_before = None
-                    if not module_options:
+                    if not module_options and generator_steps is None:
                         try:
                             manifest_before = _file(runtime / "runtime.json", 512 * 1024)
                         except (ValueError, OSError, TypeError):
@@ -717,12 +724,14 @@ class ReadingDesk:
                     report = run_experiment(runtime, source, target["entry"], inputs,
                         directory / "execution", allow_execution=True,
                         expected_source_sha256=target["source_sha256"], cancel_requested=cancellation.is_set,
-                        **module_options, **trace_options,
-                        **({"expected_input_sha256": hashlib.sha256(raw_input).hexdigest()} if trace_lines else {}))
+                        **module_options, **execution_options,
+                        **({"expected_input_sha256": hashlib.sha256(raw_input).hexdigest()}
+                           if trace_lines or generator_steps is not None else {}))
                     execution = report.get("execution") or {}
                     complete = (report["source_unchanged"] and report["runtime_unchanged"]
                         and report["process_status"] == "passed" and not execution.get("output_limit", False)
-                        and (execution.get("host_status"), execution.get("detail")) in (("exited", None), ("guest_exit", 0)))
+                        and (execution.get("host_status"), execution.get("detail")) in (("exited", None), ("guest_exit", 0))
+                        and (generator_steps is None or report.get("reported_result") is not None))
                     candidate = None
                     if complete and manifest_before is not None:
                         try:
@@ -749,6 +758,8 @@ class ReadingDesk:
                                 # JSON as TEXT: passing a result object through a
                                 # browser JSON decoder would round large integers.
                                 text = json.dumps(reported, ensure_ascii=False, allow_nan=False, indent=2)
+                                if generator_steps is not None and len(json.dumps(reported, ensure_ascii=True, indent=2)) > 128 * 1024:
+                                    text = json.dumps(reported, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
                                 # Keep readable Unicode, but expose invisible/bidi
                                 # controls and lone surrogates as JSON escapes.
                                 self.experiment["result_text"] = "".join(character if character.isprintable() or character == "\n"
@@ -774,7 +785,7 @@ class ReadingDesk:
                         if cancellation.is_set() and not self.experiment.get("cleanup_unknown"):
                             self._trial_candidate = None
                             self.experiment = {**target, "id": identifier, "status": "cancelled",
-                                "input_text": payload["input_text"], **trace_options}
+                                "input_text": payload["input_text"], **execution_options}
                         self.experiment["elapsed_seconds"] = round(time.monotonic() - started, 2)
 
             self.experiment_worker = threading.Thread(target=run, name="forge8-isolated-experiment")
@@ -1044,6 +1055,7 @@ class ReadingDesk:
         candidate = self._trial_candidate
         current = trial_result_view(candidate) if candidate is not None else None
         eligible = (not self.closed and not alive and self.experiment.get("status") == "completed"
+            and "generator_steps" not in self.experiment
             and self.experiment.get("source_unchanged") is True and self.experiment.get("runtime_unchanged") is True
             and self.experiment.get("cleanup_unknown") is not True and current is not None
             and current["id"] == self.experiment["id"] and current["version"] == self.project["version"]

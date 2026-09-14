@@ -75,6 +75,12 @@
         <details id="experiment-search-plan" hidden><summary>搜尋輸入預覽 · 完整清單</summary><ol id="experiment-search-inputs"></ol></details>
         <label id="experiment-trace-option" class="experiment-trace-option" hidden><input id="experiment-trace-lines" type="checkbox" aria-describedby="experiment-trace-option-note">記錄本次呼叫的原碼行（選用）</label>
         <p id="experiment-trace-option-note" class="muted" hidden>僅單檔；最多 1,000 次行事件，可能增加執行時間。勾選不執行，按下方執行才生效。</p>
+        <details id="experiment-generator-option" hidden><summary>逐步查看 generator（選用）</summary>
+        <label>Generator · 下一次試跑 <select id="experiment-generator-steps" aria-describedby="experiment-generator-note">
+          <option value="0">不推進（預設）</option><option value="1">最多 1 次 next()</option><option value="2">最多 2 次 next()</option><option value="3">最多 3 次 next()</option><option value="4">最多 4 次 next()</option><option value="5">最多 5 次 next()</option><option value="6">最多 6 次 next()</option><option value="7">最多 7 次 next()</option><option value="8">最多 8 次 next()</option><option value="9">最多 9 次 next()</option><option value="10">最多 10 次 next()</option><option value="11">最多 11 次 next()</option><option value="12">最多 12 次 next()</option>
+        </select></label>
+        <p id="experiment-generator-note" class="muted" hidden>僅單檔；須先關閉行紀錄。選單不執行；按執行才會逐次 next()，最後嘗試 close()。每次 next() 與 close() 都可能執行 finally。上限計算 next() 嘗試次數，不代表已耗盡；JSON 是各步當下的未驗證快照，不與 A 比較。</p>
+        </details>
         <div class="experiment-actions"><button id="experiment-run" type="button" disabled>執行完整模組，再呼叫函式</button><button id="experiment-cancel" type="button" class="quiet" hidden>取消這次試跑</button><button id="experiment-recheck" type="button" class="quiet" hidden>重新確認狀態（不執行）</button></div>
         </div><div id="experiment-output-side" class="experiment-output-side">
         <section id="experiment-baseline-controls" hidden aria-label="固定一筆試跑回報">
@@ -93,6 +99,7 @@
         <details id="experiment-baseline-b-input" hidden><summary>B 已送出的輸入（唯讀）</summary><p class="muted">這是本次送出的原文；編輯下一次輸入不會改寫 A 或 B。</p><pre id="experiment-baseline-b-input-text" tabindex="0"></pre></details>
         <p id="experiment-status" class="experiment-status" role="status" aria-live="polite"></p>
         <p id="experiment-input-state" class="experiment-input-state" role="status" hidden>輸入已修改；目前回報仍屬上次輸入。按執行才會產生新的回報。</p>
+        <p id="experiment-generator-submitted" class="muted" role="status" hidden></p>
         <section id="experiment-result" hidden aria-label="試跑回傳值或例外"><h4>程式回報的結果 · 未驗證</h4><pre id="experiment-result-text" tabindex="0"></pre></section>
         <section id="experiment-trace" hidden aria-labelledby="experiment-trace-title">
           <h4 id="experiment-trace-title">本次呼叫的行位置 · guest 回報，未驗證</h4>

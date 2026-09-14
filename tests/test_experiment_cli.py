@@ -15,6 +15,30 @@ from forge8 import cli, experiments
 
 
 class ExperimentCLITests(unittest.TestCase):
+    def test_generator_switch_requires_consent_and_forwards_exact_limit(self):
+        self.assertEqual(self.invoke(self.run_args(consent=False) + ["--generator-steps", "3"])[0], 2)
+        self.run_call.assert_not_called()
+        code, _, errors = self.invoke(self.run_args() + ["--generator-steps", "3"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.run_call.call_args.kwargs, {"allow_execution": True, "generator_steps": 3})
+        self.assertIn("at most 3", errors)
+        self.assertIn("explicitly close", errors)
+        self.assertIn("does not prove exhaustion", errors)
+
+    def test_generator_rejects_incompatible_modes_before_allocating_run(self):
+        for options in (["--trace-lines"], ["--module-root", str(self.source.parent), "--module-file", "owned.py"]):
+            with self.subTest(options=options):
+                self.assertEqual(self.invoke(self.run_args() + ["--generator-steps", "2"] + options)[0], 2)
+        self.parent.assert_not_called()
+        self.run_call.assert_not_called()
+
+    def test_generator_missing_observation_or_failed_process_is_not_success(self):
+        self.report["reported_result"] = None
+        self.assertEqual(self.invoke(self.run_args() + ["--generator-steps", "2"])[0], 2)
+        self.report["reported_result"] = {"generator": {}}
+        self.report["process_status"] = "timed_out"
+        self.assertEqual(self.invoke(self.run_args() + ["--generator-steps", "2"])[0], 2)
+
     def test_trace_switch_requires_consent_and_forwards_only_true(self):
         code, output, _ = self.invoke(self.run_args(consent=False) + ["--trace-lines"])
         self.assertEqual(code, 2)

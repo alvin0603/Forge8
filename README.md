@@ -78,7 +78,8 @@ See [platform support](docs/PLATFORMS.md) and [measured limits](docs/VALIDATION.
 - Navigate definitions, keyword matches, and individual same-spelling calls across
   files. These are static candidates, not a resolved call graph.
 - Explicitly try small Python functions in a separate WASI guest, inspect reported
-  results and optional line visits, or pin one input/result beside the next trial.
+  results, bounded generator yields or optional line visits. Pin an ordinary
+  input/result beside the next trial.
 - Compare local HEAD with saved changes. Search inputs drawn from both versions'
   conditions to expose a different return or exception, without writing tests.
   Separate Python repair can propose a patch checked by existing tests.

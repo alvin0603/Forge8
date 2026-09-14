@@ -74,6 +74,39 @@ dependencies. It uses conventional constant seeding, not a new differential-test
 algorithm. These are consumed development examples, not upstream regressions,
 held-out bug-finding rates or evidence that model explanations improved.
 
+## Bounded generator trials
+
+The September 14 native checks completed 21 fixed calls on each platform, using
+small deliberate fixtures and unchanged CPython 3.14.7 `heapq.py`. For
+`merge([1, 3], [2, 4])`, two attempts reported `[1, 2]` without claiming exhaustion;
+six attempts reported `[1, 2, 3, 4]`, exhaustion on attempt five and a null return.
+With inputs `[1, "x"]` and `[2, 4]`, the guest reported `1` before a `TypeError`
+on attempt two. The ordinary, non-consuming call still reports that a generator
+cannot be serialized; it never silently starts iteration.
+
+Other cases checked detached mutable yields, empty generators, separate iteration
+and close errors, unsupported JSON, duplicate normalized keys, retained-value
+overflow, and a 30,000-element yield. Infinite loops in either `next()` or `close()`
+were interrupted by the guest timer without publishing partial results. All
+workers exited normally. One initial Windows proof stopped because its process
+observer also counted Python's OS-version query; the corrected observer left
+product code and expected results unchanged. The failed record was retained.
+
+Real Edge journeys against both native services made three further `heapq.merge`
+calls each. They checked retained A, separate submitted/draft modes, GET-only reload,
+and 390/1440-pixel layouts. The same journeys selected all 122 unchanged lines of
+Requests' `resolve_redirects` as 80+42 lines without executing it or asking a model.
+A nonempty question, both selections and initially empty answer/history survived
+the trials; populated history is covered by mocked regressions, not this journey.
+After layout adjustments, both journeys passed again with the first yielded values
+visible on completion and input focus preserved. A Windows viewport capture also
+confirmed the result layout without changing scroll positions or rerunning on reload.
+
+The local 1,430-test Python suite passed on each host (WSL: 12 skips; Windows
+Python 3.10: 35 skips), along with all seven Node harnesses and 21 Windows setup
+assertions. These checks establish bounded application behavior on the tested
+inputs, not improved LLM reasoning, a trusted oracle or a general accuracy rate.
+
 ## Model quality and waiting time
 
 The public desk reader is Qwen3.5-9B Q4_K_M with llama.cpp b10621, an 8K context
