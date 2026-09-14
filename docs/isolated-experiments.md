@@ -199,6 +199,26 @@ steps** before confirming execution. Each step attempts `next()` once. Forge8 th
 explicitly calls `close()`, which can also run code, including `finally` blocks.
 Nothing runs when you merely select a mode.
 
+Try the included [batch_rows.py](../examples/isolated-functions/batch_rows.py).
+With the optional runtime installed, start the desk from the repository root:
+
+```text
+forge8 read examples/isolated-functions --allow-experiments
+```
+
+1. Open `batch_rows.py`, expand its definition outline, and choose the trial
+   action beside `batch_rows`. Leave extra modules and line tracing off.
+2. Paste `{"args": [[1, 2, 3], 2], "kwargs": {}}` into the JSON input. Expand the
+   generator controls and select a maximum of **3 next calls**.
+3. Confirm execution. Expect `yields` to be `[[1, 2], [3]]`, `next_calls` to be
+   `3`, and `iteration.status` to be `"exhausted"`. The third call detects completion.
+
+Running the same input with **2 next calls** yields the same two batches, but
+reports `"limit_reached"`: it has not attempted the call that observes exhaustion.
+Each batch is a fresh list; the function does not reuse or clear an earlier
+yielded container. Change the size argument to `0` to see a delayed `ValueError`
+on the first next call, not when the generator is created.
+
 The result separates `yields`, `iteration`, `serialization` and `close`:
 
 - `limit_reached` means the chosen number of attempts was used, not that the

@@ -6,10 +6,10 @@ results are listed separately. Neither predicts model performance on another mac
 
 ## Application paths
 
-- GitHub-hosted Windows and Ubuntu each passed the 1,374-test Python suite and
-  all seven Node UI harnesses. The Python runs took 124.8 s on Windows (13 skips)
-  and 41.0 s on Ubuntu (12 skips). Windows setup fixtures also passed.
-  See [the CI run](https://github.com/alvin0603/forge8/actions/runs/34521454959).
+- GitHub-hosted Windows and Ubuntu each passed the 1,430-test Python suite and
+  all seven Node UI harnesses. The Python runs took 148.0 s on Windows (13 skips)
+  and 41.7 s on Ubuntu (12 skips). Windows setup fixtures also passed.
+  See [the CI run](https://github.com/alvin0603/Forge8/actions/runs/34796570444).
 - During publication preparation, one wheel was installed and exercised with a
   real browser against both native services, including an asset-free setup and
   narrow/desktop layouts.
@@ -107,6 +107,13 @@ Python 3.10: 35 skips), along with all seven Node harnesses and 21 Windows setup
 assertions. These checks establish bounded application behavior on the tested
 inputs, not improved LLM reasoning, a trusted oracle or a general accuracy rate.
 
+The included `batch_rows` walkthrough also completed three actual CLI trials on
+each native host. Three attempts yielded `[[1, 2], [3]]` and detected exhaustion;
+two yielded the same batches without claiming exhaustion. A zero batch size
+reported `ValueError` on the first advance. Calls took 0.89–0.98 s on Windows
+and 3.93–4.10 s on WSL, including verification. These are six observations,
+not a latency benchmark.
+
 ## Model quality and waiting time
 
 The public desk reader is Qwen3.5-9B Q4_K_M with llama.cpp b10621, an 8K context
@@ -117,6 +124,12 @@ quality is still a major limitation. A three-seed development screen produced
 19 fully met, 4 partly met and 13 unmet rubric items out of 36. An alternative
 model and a presentation experiment did not meet their adoption criteria.
 Those failures were retained, not replaced with successful retries.
+
+A later 18-call citation experiment kept all nine paired answer texts identical
+and improved accepted delivery from 6/9 to 9/9. The variant allowed one reference
+per source read, but sometimes chose narrower spans or omitted a useful reference
+entirely. It was not adopted: valid references and fewer failures did not justify
+making source verification harder. Model prose did not become more accurate.
 
 One earlier four-question delivery check had only 2 fully correct answers on
 each native platform. Windows cold completion took about 73 s; WSL took about
