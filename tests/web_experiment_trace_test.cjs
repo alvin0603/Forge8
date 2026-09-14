@@ -43,8 +43,15 @@ function harness() {
         return fixture.source ? fixture.source(options) : response({version: "v1", path: "probe.py", lines});
       }
       if (route === "/api/experiment/current") return fixture.status ? fixture.status() : response(fixture.job);
+      if (route === "/api/experiment/baseline/clear") {
+        assert.deepEqual(body, {id: fixture.job.input_comparison.baseline.id, version: "v1", revision: fixture.job.input_comparison.revision});
+        fixture.job.input_comparison = {...fixture.job.input_comparison, revision: fixture.job.input_comparison.revision + 1, baseline: null, reason: "no_baseline"};
+        return response(fixture.job.input_comparison);
+      }
       if (route === "/api/experiment/run") {
-        fixture.job = {...target, id: "trial2", status: "running", input_text: body.input_text, elapsed_seconds: 0, ...(body.trace_lines ? {trace_lines: true} : {})};
+        if (fixture.reject) return {ok: false, status: 400, json: async () => ({error: "watch rejected"})};
+        fixture.job = {...target, id: "trial2", status: "running", input_text: body.input_text, elapsed_seconds: 0,
+          ...(body.trace_lines ? {trace_lines: true} : {}), ...(body.watch_names ? {watch_names: clone(body.watch_names)} : {})};
         if (fixture.lost) throw Error("lost POST response");
         return response({id: fixture.job.id});
       }
@@ -60,6 +67,7 @@ function harness() {
       state.job = {id:'reading',status:'incomplete'}; state.history = [{id:'previous-reading',status:'incomplete'}];
       state.experiment = {target: fixtureJob, baseTarget: fixtureTarget, job: fixtureJob, input: fixtureJob.input_text, visible: true,
         preparing: false, submitting: false, unknown: false, checking: false, moduleDraft: [], traceDraft: fixtureJob.trace_lines === true,
+        watchDraft: (fixtureJob.watch_names || []).join(', '), watchRevision: 0,
         traceRevision: 0, inputRevision: 0, prepareRequest: 0, statusRequest: 0, lastId: fixtureJob.id};
       $('question').value = 'UNSENT_QUESTION'; $('experiment-input').value = fixtureJob.input_text; $('answer').textContent = 'PRESERVED_ANSWER'; renderExperiment();`);
   };
@@ -192,9 +200,162 @@ async function sourceRacesAndBounds() {
   assert.equal(replaced.nodes["experiment-input"].value, "new draft");
 }
 
+function watchedJob(h) {
+  const value = json => ({state: "value", json});
+  return {...h.terminal, watch_names: ["total", "item"], reported_trace: {
+    ...h.terminal.reported_trace, watch: {names: ["total", "item"], truncated: false, events: [
+      {event: "line", line: 2, call_id: 1, values: {total: value("9007199254740993"), item: {state: "unbound"}}},
+      {event: "line", line: 2, call_id: 2, values: {total: value("99"), item: value('"<img src=x onerror=alert(1)>"')}},
+      {event: "return", line: 6, call_id: 2, values: {total: value("99"), item: {state: "unsupported"}}},
+      {event: "line", line: 5, call_id: 1, values: {total: value("9007199254740995"), item: {state: "limited"}}},
+      {event: "exception", line: 5, call_id: 1, values: {total: {state: "unsupported"}, item: {state: "unbound"}}},
+      {event: "return", line: 6, call_id: 1, values: {total: value("9007199254740995"), item: {state: "unbound"}}}
+    ]}}};
+}
+function watchDraft(h, value) {
+  h.nodes["experiment-watch-names"].value = value;
+  h.nodes["experiment-watch-names"].listeners.input();
+}
+async function watchedNavigationAndSchema() {
+  const h = harness(), job = watchedJob(h); h.show(job);
+  const before = readState(h), box = h.nodes["experiment-watch-values"];
+  assert.equal(h.requests.length, 0);
+  assert.equal(box.hidden, false); assert(box.textContent.includes("9007199254740993")); assert(box.textContent.includes("尚未綁定"));
+  await click(h, "experiment-trace-view");
+  await click(h, "experiment-trace-next");
+  assert(box.textContent.includes("<img src=x")); assert.equal(box.querySelectorAll("img").length, 0);
+  assert(box.children[0].textContent.includes("無可比較的前值"), "another invocation is not the preceding snapshot");
+  await click(h, "experiment-trace-next"); assert(box.textContent.includes("此值型別不支援"));
+  await click(h, "experiment-trace-next");
+  assert(box.children[0].textContent.includes("前次快照：9007199254740993"));
+  assert(box.children[0].textContent.includes("目前快照：9007199254740995"));
+  assert(!box.children[0].textContent.includes("前次快照：99"));
+  assert(box.textContent.includes("超過值的深度")); assert(h.nodes["experiment-trace-position"].textContent.includes("呼叫 #1"));
+  const retained = box.children[0]; h.run("renderExperiment()"); assert.equal(box.children[0], retained);
+  await click(h, "experiment-trace-next"); assert(h.nodes["experiment-trace-position"].textContent.includes("不代表未被捕捉"));
+  await click(h, "experiment-trace-next"); assert(h.nodes["experiment-trace-position"].textContent.includes("不代表成功"));
+  assert.equal(h.requests.length, 1); assert.equal(readState(h), before);
+  const invalid = [
+    j => j.watch_names = [], j => j.watch_names = ["total", "total"], j => j.watch_names = ["class"],
+    j => j.trace_lines = false, j => j.generator_steps = 1, j => j.module_set = {}, j => j.mode = "head_current",
+    j => j.reported_trace.watch.names.reverse(),
+    j => j.reported_trace.watch.events[0].values = {item: {state: "unbound"}, total: {state: "value", json: "1"}},
+    j => j.reported_trace.watch.events[0].values.total = {state: "value", json: 9007199254740992},
+    j => j.reported_trace.watch.events[0].values.total = {state: "value", json: '"非 ASCII"'},
+    j => j.reported_trace.watch.events[0].values.total = {state: "limited", json: "1"},
+    j => j.reported_trace.watch.events[0].values.total = {state: "missing"},
+    j => j.reported_trace.watch.events[0].values.total.json = "x".repeat(2049),
+    j => j.reported_trace.watch.events[0].line = 11,
+    j => j.reported_trace.watch.events[0].call_id = 2,
+    j => j.reported_trace.watch.events[0].event = "call",
+    j => j.reported_trace.watch.events = Array(129).fill(j.reported_trace.watch.events[0]),
+    j => j.reported_trace.watch.truncated = 1,
+    j => j.reported_trace.watch.extra = "unknown"
+  ];
+  for (const mutate of invalid) {
+    const bad = clone(job); mutate(bad); h.context.badWatchJob = bad;
+    assert.equal(h.run("validExperimentTrace(badWatchJob,state.project)"), false, String(mutate));
+  }
+  const unrequested = clone(job); delete unrequested.watch_names; h.context.badWatchJob = unrequested;
+  assert.equal(h.run("validExperimentTrace(badWatchJob,state.project)"), false);
+  for (const changes of [{status: "incomplete"}, {source_unchanged: false}, {runtime_unchanged: false}, {cleanup_unknown: true}, {reported_trace: null}]) {
+    h.show({...job, ...changes}); assert.equal(box.hidden, true, JSON.stringify(changes));
+  }
+}
+async function watchedDraftsAndRecovery() {
+  const h = harness(), job = watchedJob(h); h.fixture.job = clone(job); h.show(job);
+  watchDraft(h, "item"); await h.run("pollExperiment()");
+  assert.equal(h.nodes["experiment-watch-names"].value, "item");
+  assert(h.nodes["experiment-watch-submitted"].textContent.includes("total, item"));
+  assert.equal(h.nodes["experiment-input-state"].hidden, false);
+  await click(h, "experiment-run");
+  const posted = h.requests.find(request => request.route === "/api/experiment/run").body;
+  assert.deepEqual(posted.watch_names, ["item"]); assert.equal(posted.trace_lines, true);
+  assert.equal(posted.input_text, originalInput);
+  assert.equal(h.nodes["experiment-watch-values"].hidden, true, "new running job cannot retain old snapshots");
+  const off = harness(); off.show(watchedJob(off)); watchDraft(off, "");
+  await click(off, "experiment-run");
+  assert.equal("watch_names" in off.requests.find(request => request.route === "/api/experiment/run").body, false);
+  const lost = harness(); lost.fixture.job = watchedJob(lost); lost.show(lost.fixture.job); lost.fixture.lost = true;
+  await click(lost, "experiment-run");
+  assert.equal(lost.requests.filter(request => request.method === "POST").length, 1);
+  assert.deepEqual(clone(lost.run("state.experiment.job.watch_names")), ["total", "item"]);
+  for (const responseKind of ["previous", "idle", "wrong_names"]) {
+    const uncertain = harness(); uncertain.show(watchedJob(uncertain)); uncertain.fixture.lost = true;
+    const previous = clone(uncertain.run("state.experiment.job"));
+    uncertain.fixture.status = () => uncertain.response(responseKind === "idle" ? {id: null, status: "idle"} :
+      responseKind === "previous" ? previous : {...uncertain.fixture.job, watch_names: ["item"]});
+    await click(uncertain, "experiment-run");
+    assert.equal(uncertain.run("state.experiment.unknown"), true, responseKind);
+    assert.equal(uncertain.requests.filter(request => request.method === "POST").length, 1);
+  }
+  for (const edit of [null, "item", ""]) {
+    const reload = harness(); reload.fixture.job = watchedJob(reload);
+    reload.run("state.experiment.job = null; state.experiment.target = null; state.experiment.unknown = true; state.experiment.watchDraft = ''; state.experiment.watchRevision = 0");
+    if (edit !== null) { reload.run("state.experiment.watchDraft = 'item'; state.experiment.watchRevision = 1"); reload.run("state.experiment.watchDraft = " + JSON.stringify(edit) + "; state.experiment.watchRevision++"); }
+    await reload.run("pollExperiment()");
+    assert.equal(reload.nodes["experiment-watch-names"].value, edit === null ? "total, item" : edit);
+    assert(reload.nodes["experiment-watch-submitted"].textContent.includes("total, item"));
+    assert.equal(reload.requests.length, 1); assert.equal(reload.requests[0].method, "GET");
+  }
+  const late = harness(), statusReply = deferred(); late.fixture.status = () => statusReply.promise;
+  const recovering = late.run("pollExperiment()");
+  watchDraft(late, "item"); watchDraft(late, "");
+  statusReply.resolve(late.response({...watchedJob(late), id: "recovered-watch"})); await recovering;
+  assert.equal(late.nodes["experiment-watch-names"].value, "", "late new-job GET cannot overwrite an ABA-edited draft");
+  assert(late.nodes["experiment-watch-submitted"].textContent.includes("total, item"));
+  assert.equal(late.requests.length, 1); assert.equal(late.requests[0].method, "GET");
+  const race = harness(), pending = deferred(); race.show(watchedJob(race)); race.fixture.source = () => pending.promise;
+  const opening = click(race, "experiment-trace-view");
+  watchDraft(race, "item"); watchDraft(race, "total, item");
+  pending.resolve(race.response({version: "v1", path: "probe.py", lines})); await opening;
+  assert.equal(race.nodes["experiment-trace-source"].hidden, true, "ABA-edited watch draft invalidates delayed source GET");
+  assert.equal(race.requests.length, 1);
+  const module = harness(); module.show(watchedJob(module));
+  module.run("state.experiment.moduleDraft = ['other']; experimentControls()");
+  assert.equal(module.nodes["experiment-run"].disabled, true);
+  await click(module, "experiment-run"); assert.equal(module.requests.length, 0);
+  const rejected = harness(); rejected.fixture.job = watchedJob(rejected); rejected.show(rejected.fixture.job); rejected.fixture.reject = true;
+  await click(rejected, "experiment-run");
+  assert(rejected.nodes["experiment-status"].textContent.includes("watch rejected"));
+  assert(rejected.nodes["experiment-status"].textContent.includes("未重送"));
+  assert.equal(rejected.run("state.experiment.unknown"), false);
+  assert.equal(rejected.requests.filter(request => request.method === "POST").length, 1);
+}
+async function watchedBaseline() {
+  const h = harness(), job = watchedJob(h);
+  const baseline = {...h.target, id: "ordinary-a", input_text: originalInput, result_text: '{"return":9007199254740993}',
+    input_sha256: "b".repeat(64), runtime_sha256: "c".repeat(64), report_sha256: "d".repeat(64), trace_lines: false};
+  job.input_comparison = {revision: 1, baseline, current_id: job.id, can_pin: false, settling: false,
+    outcome: "unavailable", reason: "current_unavailable", current_report_sha256: null};
+  h.fixture.job = clone(job); h.show(job); await h.run("pollExperiment()");
+  assert.equal(h.nodes["experiment-baseline-a"].hidden, false); assert.equal(h.nodes["experiment-baseline-clear"].disabled, false);
+  assert.equal(h.nodes["experiment-baseline-pin"].disabled, true);
+  assert.equal(h.nodes["experiment-baseline-a-result"].textContent, baseline.result_text);
+  watchDraft(h, ""); h.run("renderExperiment()");
+  assert.equal(h.nodes["experiment-baseline-pin"].disabled, true, "changing the next draft cannot make a watched result pinnable");
+  await click(h, "experiment-baseline-pin"); assert.equal(h.requests.filter(request => request.method === "POST").length, 0);
+  for (const change of [{can_pin: true}, {current_report_sha256: "d".repeat(64)}, {outcome: "same", reason: null}]) {
+    h.context.badWatchJob = {...job, input_comparison: {...job.input_comparison, ...change}};
+    assert.equal(h.run("validExperimentInputComparison(badWatchJob,state.project)"), false);
+  }
+  await click(h, "experiment-baseline-clear");
+  assert.equal(h.nodes["experiment-baseline-a"].hidden, true);
+  assert.equal(h.requests.filter(request => request.route === "/api/experiment/run").length, 0);
+  assert.equal(h.requests.filter(request => request.method === "POST").length, 1);
+  const ordinary = harness(), ordinaryJob = {...ordinary.terminal, input_comparison: {...job.input_comparison, baseline: null,
+    reason: "no_baseline", can_pin: true, current_report_sha256: "d".repeat(64)}};
+  ordinary.fixture.job = ordinaryJob; ordinary.show(ordinaryJob); await ordinary.run("pollExperiment()");
+  assert.equal(ordinary.nodes["experiment-baseline-pin"].disabled, false);
+  watchDraft(ordinary, "total"); ordinary.run("renderExperiment()");
+  assert.equal(ordinary.nodes["experiment-baseline-pin"].disabled, true, "render cannot re-enable pin while next draft requests locals");
+}
+
+
 (async () => {
   assert.match(html, /id="experiment-trace-lines"[^>]*type="checkbox"/);
   for (const id of ["experiment-trace-prev", "experiment-trace-next", "experiment-trace-view"]) assert.match(html, new RegExp(`id="${id}"[^>]*type="button"`));
   await navigationAndBindings(); await validationAndUnavailable(); await draftsOptionsAndRecovery(); await sourceRacesAndBounds();
+  await watchedNavigationAndSchema(); await watchedDraftsAndRecovery(); await watchedBaseline();
   console.log("isolated trial line-visit UI fixtures passed (no guest execution)");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -443,7 +443,7 @@ function validExperimentTarget(value, project, requireSize = false) {
     typeof value.entry === "string" && !value.entry.startsWith("__") && /^[_\p{XID_Start}][_\p{XID_Continue}]*$/u.test(value.entry) &&
     typeof value.source_sha256 === "string" && /^[0-9a-f]{64}$/.test(value.source_sha256) &&
     (!requireSize || (Number.isSafeInteger(value.source_bytes) && value.source_bytes > 0 && value.source_bytes <= 65536)) &&
-    validExperimentPair(value, project) && validExperimentModuleSet(value, project) && validExperimentGenerator(value);
+    validExperimentPair(value, project) && validExperimentModuleSet(value, project) && validExperimentGenerator(value) && validExperimentWatchSelection(value);
 }
 function validExperimentPair(target, project) {
   if (!pairedExperiment(target)) return target.mode === undefined && !project.comparison &&
@@ -463,9 +463,45 @@ function validExperimentGenerator(value) {
   return value.generator_steps === undefined || Number.isSafeInteger(value.generator_steps) && value.generator_steps >= 1 && value.generator_steps <= 12 &&
     !pairedExperiment(value) && value.module_set === undefined && value.trace_lines !== true && value.search === undefined;
 }
+function experimentWatchNames(view) {
+  const value = (view?.watchDraft || "").trim();
+  return value ? value.split(",").map(name => name.trim()) : [];
+}
+function validExperimentWatchNames(names) {
+  const keywords = "False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" ");
+  return Array.isArray(names) && names.length <= 3 && new Set(names).size === names.length &&
+    names.every(name => typeof name === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) && !keywords.includes(name));
+}
+function validExperimentWatchSelection(value) {
+  return value.watch_names === undefined || validExperimentWatchNames(value.watch_names) && value.watch_names.length > 0 &&
+    value.trace_lines === true && !pairedExperiment(value) && value.module_set === undefined && value.generator_steps === undefined && value.search === undefined;
+}
+function validExperimentWatch(trace, job, file) {
+  const names = job.watch_names, watch = trace.watch;
+  if (!names?.length) return watch === undefined;
+  const shape = (value, keys) => value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+  if (!shape(watch, ["names", "events", "truncated"]) || JSON.stringify(watch.names) !== JSON.stringify(names) ||
+      typeof watch.truncated !== "boolean" || !Array.isArray(watch.events) || watch.events.length > 128 ||
+      new TextEncoder().encode(JSON.stringify(watch)).length > 24576) return false;
+  const calls = new Set();
+  return watch.events.every(event => {
+    if (!shape(event, ["event", "line", "call_id", "values"]) || !["line", "return", "exception"].includes(event.event) ||
+        !Number.isSafeInteger(event.line) || event.line < 1 || event.line > file.lines ||
+        !Number.isSafeInteger(event.call_id) || event.call_id < 1 || event.call_id > 128 || !shape(event.values, names) ||
+        JSON.stringify(Object.keys(event.values)) !== JSON.stringify(names)) return false;
+    if (!calls.has(event.call_id)) { if (event.call_id !== calls.size + 1) return false; calls.add(event.call_id); }
+    return names.every(name => {
+      const value = event.values[name];
+      return value?.state === "value" ? shape(value, ["state", "json"]) && typeof value.json === "string" &&
+        value.json.length > 0 && value.json.length <= 2048 && /^[\x20-\x7e]+$/.test(value.json) :
+        shape(value, ["state"]) && ["unbound", "unsupported", "limited"].includes(value.state);
+    });
+  });
+}
 function sameExperimentIdentity(left, right) {
   return ["file", "path", "version", "entry", "source_sha256", "mode", "head", "current_snapshot_sha256", "generator_steps"].every(key => left[key] === right[key]) &&
-    (left.trace_lines === true) === (right.trace_lines === true) &&
+    (left.trace_lines === true) === (right.trace_lines === true) && JSON.stringify(left.watch_names || []) === JSON.stringify(right.watch_names || []) &&
     JSON.stringify(left.module_set) === JSON.stringify(right.module_set) &&
     (!pairedExperiment(left) || (left.source_bytes === right.source_bytes &&
       ["file", "path", "source_sha256", "source_bytes"].every(key => left.before?.[key] === right.before?.[key])));
@@ -560,16 +596,16 @@ async function previewExperimentSearch(view) {
   finally { if (state.experiment === view && view.searchRevision === revision) {view.searchPending = false; experimentControls();} }
 }
 function validExperimentTrace(job, project) {
-  if (job.trace_lines !== undefined && typeof job.trace_lines !== "boolean") return false;
+  if (!validExperimentWatchSelection(job) || job.trace_lines !== undefined && typeof job.trace_lines !== "boolean") return false;
   if (job.trace_lines === true && (pairedExperiment(job) || job.module_set !== undefined || project?.comparison)) return false;
   const trace = job.reported_trace;
   if (trace === undefined || trace === null) return true;
   const file = project?.files.find(file => file.id === job.file && file.path === job.path);
   return job.trace_lines === true && trace && typeof trace === "object" && !Array.isArray(trace) &&
-    Object.keys(trace).sort().join(",") === "hook_intact,line_events,truncated" &&
+    Object.keys(trace).sort().join(",") === "hook_intact,line_events,truncated" + (job.watch_names?.length ? ",watch" : "") &&
     typeof trace.truncated === "boolean" && typeof trace.hook_intact === "boolean" &&
     Array.isArray(trace.line_events) && trace.line_events.length <= 1000 && (!trace.truncated || trace.line_events.length === 1000) && Number.isSafeInteger(file?.lines) &&
-    trace.line_events.every(line => Number.isSafeInteger(line) && line >= 1 && line <= file.lines);
+    trace.line_events.every(line => Number.isSafeInteger(line) && line >= 1 && line <= file.lines) && validExperimentWatch(trace, job, file);
 }
 function usableExperimentTrace(job, project = state.project) {
   return job?.trace_lines === true && validExperimentTarget(job, project) && validExperimentTrace(job, project) &&
@@ -610,7 +646,7 @@ function validExperimentInputComparison(job, project = state.project) {
       !["same", "different", "unavailable"].includes(value.outcome) ||
       ![null, "no_baseline", "current_unavailable", "same_run", "source_changed", "runtime_changed", "trace_mode_changed"].includes(value.reason) ||
       value.current_report_sha256 !== null && !sha(value.current_report_sha256)) return false;
-  if (job.generator_steps !== undefined && (value.can_pin || value.current_report_sha256 !== null || value.outcome !== "unavailable" ||
+  if ((job.generator_steps !== undefined || job.watch_names?.length) && (value.can_pin || value.current_report_sha256 !== null || value.outcome !== "unavailable" ||
       !["no_baseline", "current_unavailable"].includes(value.reason))) return false;
   const baseline = value.baseline;
   if (baseline !== null && (!shape(baseline, ["id", "version", "file", "path", "entry", "source_sha256", "source_bytes", "input_text", "input_sha256", "runtime_sha256", "report_sha256", "result_text", "trace_lines"]) ||
@@ -659,7 +695,7 @@ function renderExperimentBaseline() {
   $("experiment-baseline-controls").hidden = !visible;
   const blocked = !view?.visible || !supported || !bound || !Number.isSafeInteger(view.baselineRevision) || value.revision >= Number.MAX_SAFE_INTEGER || view?.checking || view?.preparing || experimentBusy() || experimentBaselineBusy() ||
     active() || modelMutationBlocked() || state.refreshing || state.pairPending;
-  $("experiment-baseline-pin").disabled = blocked || !value?.can_pin || baseline?.id === job?.id || Boolean(view?.generatorDraft) || job?.generator_steps !== undefined;
+  $("experiment-baseline-pin").disabled = blocked || !value?.can_pin || baseline?.id === job?.id || Boolean(view?.generatorDraft) || job?.generator_steps !== undefined || experimentWatchNames(view).length > 0 || Boolean(job?.watch_names?.length);
   $("experiment-baseline-pin").textContent = baseline ? "以這次回報取代 A（不執行）" : "固定這次回報為 A（不執行）";
   $("experiment-baseline-clear").hidden = !baseline;
   $("experiment-baseline-clear").disabled = !view?.visible || !visible || !bound || !baseline || view.baselineRevision >= Number.MAX_SAFE_INTEGER || view?.checking || view?.preparing || experimentBusy() || experimentBaselineBusy() ||
@@ -674,6 +710,7 @@ function renderExperimentBaseline() {
     verdict && value.outcome !== "unavailable" ? `A 與 B 的程式回報${value.outcome === "same" ? "相同" : "不同"} · 未驗證` :
     verdict ? reasons[value.reason] || "尚無可比較的完整回報。" : "A 保留不變；下一次仍需明確執行，草稿不是 B 的已送出輸入。";
   if (visible && (view?.generatorDraft || job?.generator_steps !== undefined)) $("experiment-baseline-summary").textContent += "\nGenerator 回報不固定為 A，也不與 A 比較；已有 A 保留，可明確清除。";
+  if (visible && (experimentWatchNames(view).length || job?.watch_names?.length)) $("experiment-baseline-summary").textContent += "\n變數快照不固定為 A，也不與 A 比較；已有 A 保留，可明確清除。";
   if (view?.baselineNotice && !view.baselinePending && !view.baselineUnknown) $("experiment-baseline-summary").textContent += `\n${view.baselineNotice}`;
   const showA = Boolean(visible && compatible && baseline);
   $("experiment-baseline-a").hidden = !showA;
@@ -689,7 +726,7 @@ function renderExperimentBaseline() {
   $("experiment-baseline-b-input").hidden = currentInput === null;
   text("experiment-baseline-b-input-text", currentInput === null ? "" : currentInput);
   $("experiment-baseline-b-title").hidden = !showA;
-  text("experiment-baseline-b-title", job?.generator_steps !== undefined ? "Generator · 最近一次手動試跑（不與 A 比較）" : job?.id === baseline?.id ? "目前回報就是 A；尚未執行 B" : "B · 最近一次手動試跑");
+  text("experiment-baseline-b-title", job?.watch_names?.length ? "變數快照 · 最近一次手動試跑（不與 A 比較）" : job?.generator_steps !== undefined ? "Generator · 最近一次手動試跑（不與 A 比較）" : job?.id === baseline?.id ? "目前回報就是 A；尚未執行 B" : "B · 最近一次手動試跑");
   if (showA && job?.id === baseline.id) {
     $("experiment-result").hidden = true; // Keep this current A's logs and line inspector usable.
   }
@@ -770,13 +807,14 @@ function experimentControls() {
     view.callInputRequest = null; view.inputPending = false;
     view.callInputNote = "選取、入口或草稿已變更；未覆蓋輸入。";
   }
+  const watchNames = experimentWatchNames(view), watchChanged = Boolean(view?.job && JSON.stringify(view.job.watch_names || []) !== JSON.stringify(watchNames));
   const generator = view?.generatorDraft || 0, generatorChanged = Boolean(view?.job && (view.job.generator_steps || 0) !== generator);
-  $("experiment-input-state").hidden = !view?.job || typeof view.job.input_text !== "string" || view.job.input_text === $("experiment-input").value && !generatorChanged;
+  $("experiment-input-state").hidden = !view?.job || typeof view.job.input_text !== "string" || view.job.input_text === $("experiment-input").value && !generatorChanged && !watchChanged;
   $("experiment-input").readOnly = busy || Boolean(view?.preparing);
   $("experiment-input-note").textContent = `${inputBytes.toLocaleString()} / 16,384 位元組${inputBytes > 16384 ? " · 超過上限，請縮短；未裁切原稿。" : " · 原文送出，保留大型整數；不自動修正 JSON。"}`;
   const modulesDirty = experimentModulesDirty(), modulesBlocked = paired || inChanges() || !experimentsEnabled() || !view?.baseTarget || view.preparing || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending;
   const single = Boolean(view?.target && !paired && !inChanges() && !view.target.module_set && !(view.moduleDraft || []).length);
-  const generatorAllowed = single && !view?.traceDraft, generatorInvalid = Boolean(generator && (!generatorAllowed || !Number.isSafeInteger(generator) || generator < 1 || generator > 12));
+  const generatorAllowed = single && !view?.traceDraft && !watchNames.length, generatorInvalid = Boolean(generator && (!generatorAllowed || !Number.isSafeInteger(generator) || generator < 1 || generator > 12));
   $("experiment-generator-option").hidden = !single && !generator;
   $("experiment-generator-steps").value = String(generator);
   $("experiment-generator-steps").disabled = !experimentsEnabled() || !view?.target || view.preparing || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || !generator && (!generatorAllowed || modulesDirty);
@@ -787,9 +825,17 @@ function experimentControls() {
   $("experiment-trace-option").hidden = $("experiment-trace-option-note").hidden = !traceAllowed;
   $("experiment-trace-lines").disabled = !traceAllowed || modulesBlocked || modulesDirty;
   $("experiment-trace-lines").checked = view?.traceDraft === true;
+  const watchAllowed = traceAllowed && view?.traceDraft === true, watchInvalid = !validExperimentWatchNames(watchNames) || Boolean(watchNames.length && !watchAllowed);
+  $("experiment-watch-option").hidden = !watchAllowed && !watchNames.length;
+  $("experiment-watch-names").disabled = modulesBlocked;
+  if ($("experiment-watch-names").value !== (view?.watchDraft || "")) $("experiment-watch-names").value = view?.watchDraft || "";
+  $("experiment-watch-note").textContent = watchInvalid ? "請先啟用單檔行紀錄，輸入最多 3 個不重複的 ASCII 區域名稱，以逗號分隔；或清空以關閉。" :
+    "只記錄入口函式已宣告的區域名稱；最多 128 個事件／24 KiB。行事件的值在該行執行前取得；return 也可能是例外展開，不代表成功。欄位只修改下次草稿，不執行。";
+  $("experiment-watch-submitted").hidden = !view?.job || !view.job.watch_names?.length && !watchNames.length;
+  $("experiment-watch-submitted").textContent = view?.job ? "已送出的區域名稱：" + (view.job.watch_names?.join(", ") || "未啟用") + "。上方欄位只修改下次草稿。" : "";
   if (modulesDirty) $("experiment-input-state").hidden = false;
   $("experiment-input-state").textContent = modulesDirty ? "模組選擇已修改；目前回報仍屬先前來源。請展開同專案模組並核對，再明確執行。" : "輸入或試跑設定已修改；目前回報仍屬上次送出的輸入與設定。按執行才會產生新的回報。";
-  $("experiment-run").disabled = !experimentsEnabled() || !view?.target || inChanges() && !paired || modulesDirty || generatorInvalid || view.preparing || view.searchPending || view.inputPending || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || inputBytes > 16384 || !$("experiment-input").value.trim();
+  $("experiment-run").disabled = !experimentsEnabled() || !view?.target || inChanges() && !paired || modulesDirty || generatorInvalid || watchInvalid || view.preparing || view.searchPending || view.inputPending || busy || experimentBaselineBusy() || active() || modelMutationBlocked() || state.refreshing || state.pairPending || inputBytes > 16384 || !$("experiment-input").value.trim();
   const searchPlan = currentExperimentSearchPlan(view);
   $("experiment-run").textContent = paired && view?.searchDraft === true ? (searchPlan ?
     `確認上列 ${searchPlan.inputs.length} 組：最多初始化 ${searchPlan.max_initializations} 次完整模組並搜尋（120 秒＋清理）` : "預覽候選輸入（不執行）") : paired ? `依序初始化 HEAD／目前兩份完整模組，各呼叫一次 ${view?.target?.entry || "函式"}` :
@@ -935,7 +981,7 @@ function renderExperimentTrace() {
     if (view) view.traceView = null;
     $("experiment-trace-source").hidden = true;
     if ($("experiment-trace-source").children.length) $("experiment-trace-source").replaceChildren();
-    $("experiment-trace-input-text").textContent = ""; return;
+    $("experiment-trace-input-text").textContent = ""; renderExperimentWatch(null, 0); return;
   }
   const key = JSON.stringify([job.id, job.version, job.source_sha256, job.input_text, job.reported_trace]);
   if (view.traceView?.key !== key) view.traceView = {key, index: 0, source: null, read: null, note: "", rendered: null};
@@ -943,9 +989,13 @@ function renderExperimentTrace() {
   if (inspector.read && !inspector.read.current()) {
     inspector.read = null; inspector.note = "閱讀狀態或草稿已改變；未採用過期讀取，請重新按查看。";
   }
-  const count = trace?.line_events.length || 0;
+  const watch = trace?.watch, count = (watch ? watch.events.length : trace?.line_events.length) || 0;
+  renderExperimentWatch(watch, view.traceView.index);
   $("experiment-trace-summary").textContent = !trace ? "本次已要求行紀錄，但尚無可綁定到原碼與輸入的回報；不推測已執行路徑。" :
     `${count} 次行事件（依序保留重複）。${trace.truncated ? "已達上限而截斷；不是完整路徑。" : "未回報截斷；仍不是完整路徑證明。"}${trace.hook_intact ? "" : " 掛鉤結束狀態不符，紀錄可能中斷。"}${count ? "" : " 沒有捕捉到符合範圍的事件，不代表沒有執行程式。"}`;
+  if (watch) $("experiment-trace-summary").textContent = count + " 個入口函式事件；本次名稱：" + watch.names.join(", ") + "。" +
+    (watch.truncated ? "事件或位元組上限已截斷；不是完整路徑。" : "未回報截斷；仍不是完整路徑證明。") +
+    (trace.hook_intact ? "" : " 掛鉤結束狀態不符，紀錄可能中斷。") + " 原有本檔行紀錄另保留 " + trace.line_events.length + " 次。";
   const input = typeof job.input_text === "string" && new TextEncoder().encode(job.input_text).length <= 16384 ? job.input_text : null;
   const disclosure = $("experiment-trace-input"); disclosure.hidden = input === null;
   if (disclosure.dataset.job !== job.id) { disclosure.open = false; disclosure.dataset.job = job.id; }
@@ -958,8 +1008,10 @@ function renderExperimentTrace() {
   const stepKey = `${job.id}:${inspector.index}`;
   if ($("experiment-trace-step").dataset.step !== stepKey) { $("experiment-trace-step").value = String(inspector.index + 1); $("experiment-trace-step").dataset.step = stepKey; }
   $("experiment-trace-step").max = String(count);
-  const line = trace?.line_events[inspector.index];
+  const event = watch?.events[inspector.index], line = event?.line ?? trace?.line_events[inspector.index];
   $("experiment-trace-position").textContent = count ? `第 ${inspector.index + 1} / ${count} 次 → ${job.path}:L${line}。片段的前後文不代表也有行事件。` : "";
+  if (event) $("experiment-trace-position").textContent += " 呼叫 #" + event.call_id + " · " +
+    ({line: "執行這行之前", exception: "exception 事件（不代表未被捕捉）", return: "return 事件（可能是例外展開，不代表成功）"}[event.event]);
   const oversizedLine = Boolean(inspector.source && count && inspector.source.lines[line - 1].length > 4000);
   if (oversizedLine) inspector.note = "本行超過 4,000 顯示字元；未裁切或顯示不完整原碼。";
   const note = inspector.read ? "正在讀取保留原碼；不執行程式或更改模型選段…" : inspector.note;
@@ -976,20 +1028,38 @@ function renderExperimentTrace() {
     row.dataset.traceLine = current; source.append(row);
   }
 }
+function renderExperimentWatch(watch, index) {
+  const box = $("experiment-watch-values"), event = watch?.events[index], key = JSON.stringify([watch, index]);
+  box.hidden = !event;
+  if (box.dataset.snapshot === key) return;
+  box.dataset.snapshot = key; box.replaceChildren();
+  if (!event) return;
+  let previous = null;
+  for (let at = index - 1; at >= 0; at--) if (watch.events[at].call_id === event.call_id) { previous = watch.events[at]; break; }
+  for (const name of watch.names) {
+    const value = event.values[name], prior = previous?.values[name], comparable = value.state === "value" && prior?.state === "value";
+    const section = element("section", ""), label = name + (comparable ? value.json === prior.json ? " · 與此呼叫上次快照相同" : " · 此呼叫的快照已變動" : " · 無可比較的前值");
+    section.append(element("h4", label));
+    const text = value.state === "value" ? value.json : {unbound: "尚未綁定", unsupported: "此值型別不支援", limited: "超過值的深度／大小上限"}[value.state];
+    const shown = comparable && value.json !== prior.json ? "前次快照：" + prior.json + "\n目前快照：" + text : text;
+    const output = element("pre", shown); output.tabIndex = 0; section.append(output); box.append(section);
+  }
+}
 async function viewExperimentTrace(index) {
   const view = state.experiment, job = view?.job, project = state.project, trace = usableExperimentTrace(job), inspector = view?.traceView;
   if (!trace || !inspector || $("experiment-trace-view").disabled) return;
-  if (!Number.isSafeInteger(index) || index < 0 || index >= trace.line_events.length) { inspector.note = `請輸入 1–${trace.line_events.length} 的整數次序。`; renderExperimentTrace(); return; }
+  const count = trace.watch ? trace.watch.events.length : trace.line_events.length;
+  if (!Number.isSafeInteger(index) || index < 0 || index >= count) { inspector.note = "請輸入 1–" + count + " 的整數次序。"; renderExperimentTrace(); return; }
   inspector.index = index; inspector.note = "";
   if (inspector.source) { renderExperimentTrace(); return; }
-  const input = $("experiment-input").value, inputRevision = view.inputRevision || 0, optionRevision = view.traceRevision || 0;
+  const input = $("experiment-input").value, inputRevision = view.inputRevision || 0, optionRevision = view.traceRevision || 0, watchRevision = view.watchRevision || 0;
   const question = $("question").value, questionRevision = state.questionRevision, focus = state.focus, focusKey = JSON.stringify(focus);
   const sourceRequest = state.sourceRequest, contextRequest = state.contextRequest, anchor = state.anchor, end = state.end;
   const selectedHistory = state.selectedHistory, historyRequest = state.historyRequest, readingJob = state.job?.id, continuation = state.continuation;
   const request = {current: () => state.experiment === view && view.traceView === inspector && inspector.read === request && view.visible &&
     state.project === project && view.job?.id === job.id && sameExperimentIdentity(view.job, job) && view.job.input_text === job.input_text &&
     JSON.stringify(view.job.reported_trace) === JSON.stringify(trace) && usableExperimentTrace(view.job, project) &&
-    $("experiment-input").value === input && (view.inputRevision || 0) === inputRevision && (view.traceRevision || 0) === optionRevision &&
+    $("experiment-input").value === input && (view.inputRevision || 0) === inputRevision && (view.traceRevision || 0) === optionRevision && (view.watchRevision || 0) === watchRevision &&
     $("question").value === question && state.questionRevision === questionRevision && state.focus === focus && JSON.stringify(state.focus) === focusKey &&
     state.sourceRequest === sourceRequest && state.contextRequest === contextRequest && state.anchor === anchor && state.end === end &&
     state.selectedHistory === selectedHistory && state.historyRequest === historyRequest && state.job?.id === readingJob && state.continuation === continuation &&
@@ -1019,7 +1089,7 @@ function resetExperiment(refreshed = false) {
   state.experiment = {target: null, job: null, input: '{"args":[],"kwargs":{}}', visible: recover,
     preparing: false, submitting: false, unknown: recover, checking: false, cancelPending: false,
     error: "", label: "", lastId: null, submission: null, prepareRequest: 0, statusRequest: 0, traceDraft: false, traceRevision: 0,
-    searchDraft: false, searchRevision: 0, generatorDraft: 0, generatorRevision: 0};
+    searchDraft: false, searchRevision: 0, generatorDraft: 0, generatorRevision: 0, watchDraft: "", watchRevision: 0};
   $("experiment-input").value = state.experiment.input; $("experiment-logs").open = false;
   $("experiment-enabled").hidden = !experimentsEnabled();
   $("experiment-enabled").textContent = `${refreshed ? "已重新讀取原碼；先前試跑已清除。" : ""}本次已明確開放函式試跑。仍須逐次確認，才會在獨立 WASI 環境執行完整模組；不會自動執行 AI 產生的程式碼。`;
@@ -1034,6 +1104,7 @@ async function openExperiment(item, source) {
   invalidateExperimentSearch(view); view.searchDraft = false; view.searchExecutionPlan = null;
   view.baseTarget = {file: source.file.id, path: source.path, version: state.project.version, entry: item.name, ...(inChanges() ? {mode: "head_current"} : {})};
   view.traceDraft = false; view.traceRevision = (view.traceRevision || 0) + 1;
+  view.watchDraft = ""; view.watchRevision = (view.watchRevision || 0) + 1;
   view.generatorDraft = 0; view.generatorRevision = (view.generatorRevision || 0) + 1; view.generatorNotice = "";
   view.moduleDraft = []; view.moduleListKey = ""; $("experiment-modules").open = false;
   view.callInputNote = ""; view.callInputSource = null; view.callInputRequest = null; view.inputPending = false;
@@ -1071,7 +1142,7 @@ async function pollExperiment() {
     const job = await experimentApi("/api/experiment/current");
     if (state.experiment !== view || state.project !== project || request !== view.statusRequest || state.refreshing || view.submitting) return;
     if (job?.id === null && job.status === "idle") {
-      view.job = null; view.unknown = Boolean(view.submission?.search || view.submission?.generator);
+      view.job = null; view.unknown = Boolean(view.submission?.search || view.submission?.generator || view.submission?.watch);
       if (view.unknown) view.error = "試跑送出狀態尚未確認；空閒回覆不代表未受理。只查詢，不重送。";
       else if (view.submission) { view.submission = null; view.error = `服務目前沒有新試跑；沒有重送執行。${view.error}`; }
       else if (!view.target && !view.preparing) view.visible = false;
@@ -1084,7 +1155,7 @@ async function pollExperiment() {
           ["cleanup_unknown", "source_unchanged", "runtime_unchanged"].some(key => job[key] !== undefined && typeof job[key] !== "boolean") ||
           !validPairedExperimentReport(job) || !validExperimentTrace(job, project) || !validExperimentSearch(job)) throw new Error("試跑回報的來源或狀態不完整；未展示其他版本或未確認的結果。");
       if (view.submission && job.id === view.submission.previous && !["running", "cancelling"].includes(job.status)) {
-        if (view.submission.search || view.submission.generator) {view.unknown = true; view.error = "仍是前一次試跑；這次是否受理尚未確認。只查詢，不重送。";}
+        if (view.submission.search || view.submission.generator || view.submission.watch) {view.unknown = true; view.error = "仍是前一次試跑；這次是否受理尚未確認。只查詢，不重送。";}
         else {view.submission = null; view.unknown = false; view.error = `服務尚未回報新的試跑；沒有重送執行。${view.error}`;}
       } else {
         if (view.job?.id === job.id && (!sameExperimentIdentity(view.job, job) || view.job.input_text !== job.input_text ||
@@ -1105,6 +1176,7 @@ async function pollExperiment() {
         if (view.job?.id !== job.id && (view.searchRevision || 0) === searchRevision) view.searchDraft = Boolean(job.search);
         // Recover only an untouched page draft; even an ABA edit must survive late GETs.
         if (view.job?.id !== job.id && !(view.generatorRevision || 0)) view.generatorDraft = job.generator_steps || 0;
+        if (view.job?.id !== job.id && !(view.watchRevision || 0)) view.watchDraft = (job.watch_names || []).join(", ");
         if (!view.baseTarget || view.job?.id !== job.id) {
           view.baseTarget = {file: job.file, path: job.path, version: job.version, entry: job.entry, ...(pairedExperiment(job) ? {mode: "head_current"} : {})};
           view.moduleDraft = experimentModuleIds(job).filter(id => id !== job.file); view.moduleListKey = "";
@@ -1140,26 +1212,29 @@ async function runExperiment() {
   if (generator && (!validExperimentGenerator({...target, generator_steps: generator, trace_lines: view.traceDraft === true}) ||
       experimentModulesDirty() || view.moduleDraft?.length || view.searchDraft)) return;
   const guardedGenerator = Boolean(generator || target.generator_steps !== undefined);
+  const watchNames = experimentWatchNames(view), guardedWatch = Boolean(watchNames.length || target.watch_names?.length);
+  if (!validExperimentWatchNames(watchNames) || watchNames.length && (!view.traceDraft || generator || pairedExperiment(target) || target.module_set || inChanges() || view.moduleDraft?.length || view.searchDraft)) return;
   const tracing = view.traceDraft === true && !pairedExperiment(target) && !target.module_set;
   // A polled target also carries the old result; copy only source identity into the new job.
   const submittedTarget = Object.fromEntries(["file", "path", "version", "entry", "source_sha256", "source_bytes", "mode", "head", "current_snapshot_sha256", "before", "module_set"]
     .filter(key => target[key] !== undefined).map(key => [key, target[key]]));
   if (tracing) submittedTarget.trace_lines = true;
+  if (watchNames.length) submittedTarget.watch_names = [...watchNames];
   if (generator) submittedTarget.generator_steps = generator;
   view.input = input; view.submitting = true; view.unknown = false; view.error = ""; view.generatorNotice = "";
   view.searchExecutionPlan = searchPlan;
   if (searchPlan) $("experiment-search-plan").open = false;
-  view.submission = {previous: view.lastId, ...(pairedExperiment(target) || tracing || target.trace_lines === true || guardedGenerator ? {target: submittedTarget, input} : {}), ...(searchPlan ? {search: searchPlan} : {}), ...(guardedGenerator ? {generator: true} : {})}; view.job = null; view.statusRequest++;
+  view.submission = {previous: view.lastId, ...(pairedExperiment(target) || tracing || target.trace_lines === true || guardedGenerator || guardedWatch ? {target: submittedTarget, input} : {}), ...(searchPlan ? {search: searchPlan} : {}), ...(guardedGenerator ? {generator: true} : {}), ...(guardedWatch ? {watch: true} : {})}; view.job = null; view.statusRequest++;
   $("experiment-logs").open = false; $("experiment-call-input").open = false; renderExperiment();
   try {
     const job = await experimentApi("/api/experiment/run", {file: target.file, version: target.version, entry: target.entry,
       source_sha256: target.source_sha256, input_text: input, allow_execution: true,
-      ...(tracing ? {trace_lines: true} : {}), ...(generator ? {generator_steps: generator} : {}),
+      ...(tracing ? {trace_lines: true} : {}), ...(generator ? {generator_steps: generator} : {}), ...(watchNames.length ? {watch_names: watchNames} : {}),
       ...(pairedExperiment(target) ? {mode: "head_current", head: target.head, before_sha256: target.before.source_sha256} : {}),
       ...(searchPlan ? {search: searchPlan.strategy, search_plan_sha256: searchPlan.sha256} : {}),
       ...(target.module_set ? {modules: experimentModuleIds(target), module_set_sha256: target.module_set.sha256} : {})});
     if (state.experiment !== view || state.project !== project) return;
-    if (typeof job?.id !== "string" || !job.id || (searchPlan || guardedGenerator) && (!validJobId(job.id) || job.id === view.submission?.previous)) throw new Error("服務未回傳可追蹤的新試跑編號。");
+    if (typeof job?.id !== "string" || !job.id || (searchPlan || guardedGenerator || guardedWatch) && (!validJobId(job.id) || job.id === view.submission?.previous)) throw new Error("服務未回傳可追蹤的新試跑編號。");
     view.job = {...submittedTarget, id: job.id, status: "running", input_text: input, elapsed_seconds: 0,
       ...(searchPlan ? {search: {strategy: searchPlan.strategy, plan_sha256: searchPlan.sha256, total: searchPlan.inputs.length, completed: 0,
         case_index: 1, input_text: input, stop_reason: null}} : {}),
@@ -1171,7 +1246,7 @@ async function runExperiment() {
         invalidateExperimentSearch(view);
         view.job = previousJob; view.submission = null; view.unknown = false; view.error = `${error.message} 服務拒絕搜尋；未重送執行。`;
         view.searchError = view.error;
-      } else if (guardedGenerator && error.httpStatus >= 400 && error.httpStatus < 500) {
+      } else if ((guardedGenerator || guardedWatch) && error.httpStatus >= 400 && error.httpStatus < 500) {
         view.job = previousJob; view.submission = null; view.unknown = false; view.generatorNotice = `${error.message} 服務拒絕試跑；未重送執行。`;
       } else { view.unknown = true; view.error = `${error.message} 未重送；正在查詢是否已建立這次試跑。`; }
     }
@@ -1238,7 +1313,7 @@ $("experiment-search-enabled").addEventListener("change", () => {
 $("experiment-generator-steps").addEventListener("change", () => {
   const view = state.experiment, control = $("experiment-generator-steps"); if (!view) return;
   if (!control.disabled && /^(?:[0-9]|1[0-2])$/.test(control.value) && (control.value === "0" ||
-      !pairedExperiment(view.target) && !inChanges() && !view.target?.module_set && !view.moduleDraft?.length && !view.traceDraft)) {
+      !pairedExperiment(view.target) && !inChanges() && !view.target?.module_set && !view.moduleDraft?.length && !view.traceDraft && !experimentWatchNames(view).length)) {
     view.generatorDraft = Number(control.value); view.generatorRevision = (view.generatorRevision || 0) + 1;
   }
   experimentControls();
@@ -1247,6 +1322,10 @@ $("experiment-trace-lines").addEventListener("change", () => {
   const view = state.experiment; if (!view) return;
   if (!$("experiment-trace-lines").disabled) { view.traceDraft = $("experiment-trace-lines").checked; view.traceRevision = (view.traceRevision || 0) + 1; }
   experimentControls();
+});
+$("experiment-watch-names").addEventListener("input", () => {
+  const view = state.experiment; if (!view || $("experiment-watch-names").disabled) return;
+  view.watchDraft = $("experiment-watch-names").value; view.watchRevision = (view.watchRevision || 0) + 1; experimentControls();
 });
 $("experiment-trace-view").addEventListener("click", () => viewExperimentTrace(Number($("experiment-trace-step").value) - 1));
 $("experiment-trace-step").addEventListener("change", () => viewExperimentTrace(Number($("experiment-trace-step").value) - 1));

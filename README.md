@@ -80,6 +80,8 @@ See [platform support](docs/PLATFORMS.md) and [measured limits](docs/VALIDATION.
 - Explicitly try small Python functions in a separate WASI guest, inspect reported
   results, bounded generator yields or optional line visits. Pin an ordinary
   input/result beside the next trial.
+- Watch up to three local variables beside a trial's source lines and recursive
+  call IDs, without asking a model to infer their values.
 - Compare local HEAD with saved changes. Search inputs drawn from both versions'
   conditions to expose a different return or exception, without writing tests.
   Separate Python repair can propose a patch checked by existing tests.

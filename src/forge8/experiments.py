@@ -22,7 +22,8 @@ import zipfile
 from copy import deepcopy
 from typing import Callable
 
-from ._experiment_worker import ENGINE_OPTIONS, OUTPUT_BYTES, _validate_generator_steps
+from ._experiment_worker import (ENGINE_OPTIONS, OUTPUT_BYTES, _validate_generator_steps,
+                                 _validate_watch_names, _validate_watch_source)
 from .checks import CheckDefinition, CheckRunner
 from .repository import _read_regular_file, _strict_existing_directory
 from .runtime import (_artifact_path, _check_cancel, _installed_inventory, _is_reparse_point, _relative_manifest_path,
@@ -860,13 +861,71 @@ def reported_result(host: dict | None, *, generator_steps: int | None = None) ->
     return None
 
 
-def _reported_trace(host: dict | None, source: str) -> dict | None:
+def _valid_watch(watch: object, names: tuple[str, ...], line_count: int) -> bool:
+    if (type(watch) is not dict or set(watch) != {"names", "events", "truncated"}
+            or type(watch["names"]) is not list or watch["names"] != list(names)
+            or type(watch["truncated"]) is not bool or type(watch["events"]) is not list
+            or len(watch["events"]) > 128
+            or len(json.dumps(watch, ensure_ascii=True, separators=(",", ":"), allow_nan=False)) > 24 * 1024):
+        return False
+    stack, last_id = [], 0
+    for event in watch["events"]:
+        if (type(event) is not dict or set(event) != {"event", "line", "call_id", "values"}
+                or type(event["event"]) is not str or event["event"] not in {"line", "return", "exception"}
+                or type(event["line"]) is not int or not 1 <= event["line"] <= line_count
+                or type(event["call_id"]) is not int or not 1 <= event["call_id"] <= 128
+                or type(event["values"]) is not dict or list(event["values"]) != list(names)):
+            return False
+        call_id = event["call_id"]
+        if call_id == last_id + 1:
+            if last_id and not stack:
+                return False
+            stack.append(call_id)
+            last_id = call_id
+        elif not stack or stack[-1] != call_id:
+            return False
+        if event["event"] == "return":
+            stack.pop()  # A return trace event can be exception unwind, not success.
+        for value in event["values"].values():
+            if type(value) is not dict or type(value.get("state")) is not str:
+                return False
+            if value["state"] in {"unbound", "unsupported", "limited"}:
+                if set(value) != {"state"}:
+                    return False
+                continue
+            if (value["state"] != "value" or set(value) != {"state", "json"}
+                    or type(value["json"]) is not str or not value["json"].isascii()
+                    or not 1 <= len(value["json"]) <= 2048):
+                return False
+            decoded = _json(value["json"])
+            pending, nodes = [(decoded, 0)], 0
+            while pending:
+                item, depth = pending.pop()
+                nodes += 1
+                if nodes > 128 or type(item) is float and not math.isfinite(item):
+                    return False
+                if type(item) in (list, dict):
+                    if depth >= 6:
+                        return False
+                    children = [*item.keys(), *item.values()] if type(item) is dict else item
+                    pending.extend((part, depth + 1) for part in children)
+            if json.dumps(decoded, ensure_ascii=True, sort_keys=True, allow_nan=False,
+                          separators=(",", ":")) != value["json"]:
+                return False
+    return True
+
+
+def _reported_trace(host: dict | None, source: str, *, watch_names: tuple[str, ...] = ()) -> dict | None:
     """Bounded guest-reported line visits, never a trusted execution path.
 
     A missing or invalid trace cannot manufacture an empty path. End-hook
     identity does not establish that tracing remained active throughout a call.
     The independently parsed result protocol is deliberately unchanged.
     """
+    try:
+        _validate_watch_names(watch_names)
+    except ValueError:
+        return None
     result = reported_result(host)
     if result is None or result.get("phase") == "module_initialization":
         return None
@@ -883,12 +942,18 @@ def _reported_trace(host: dict | None, source: str) -> dict | None:
         value = _json(candidates[0])
     except (ValueError, TypeError, RecursionError):
         return None
-    if (type(value) is not dict or set(value) != {"line_events", "truncated", "hook_intact"}
+    expected = {"line_events", "truncated", "hook_intact"} | ({"watch"} if watch_names else set())
+    if (type(value) is not dict or set(value) != expected
             or type(value["line_events"]) is not list or len(value["line_events"]) > 1000
             or type(value["truncated"]) is not bool or type(value["hook_intact"]) is not bool
             or (value["truncated"] and len(value["line_events"]) != 1000)
             or any(type(line) is not int or not 1 <= line <= line_count
                    for line in value["line_events"])):
+        return None
+    try:
+        if watch_names and not _valid_watch(value["watch"], watch_names, line_count):
+            return None
+    except (ValueError, TypeError, RecursionError, OverflowError):
         return None
     return value
 
@@ -1031,7 +1096,9 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
                    cancel_requested: Callable[[], bool] | None = None,
                    module_root: Path | None = None, module_files: list[str] | None = None,
                    expected_module_set_sha256: str | None = None,
-                   trace_lines: bool = False, generator_steps: int | None = None) -> dict:
+                   trace_lines: bool = False, generator_steps: int | None = None,
+                   watch_names: tuple[str, ...] = ()) -> dict:
+    _validate_watch_names(watch_names)
     if type(trace_lines) is not bool:
         raise ValueError("trace_lines must be a boolean")
     if generator_steps is not None:
@@ -1043,6 +1110,8 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
         raise ValueError("line tracing supports single-file experiments only")
     if generator_steps is not None and (trace_lines or module_mode):
         raise ValueError("generator consumption requires an untraced single-file trial")
+    if watch_names and (not trace_lines or module_mode or generator_steps is not None):
+        raise ValueError("watching requires a single-file line trace without generator consumption")
     started = time.monotonic()
     _check_cancel(cancel_requested)
     cancel_options = {} if cancel_requested is None else {"cancel_requested": cancel_requested}
@@ -1079,6 +1148,9 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
         request["trace_lines"] = identity["trace_lines"] = True
     if generator_steps is not None:
         request["generator_steps"] = identity["generator_steps"] = generator_steps
+    if watch_names:
+        _validate_watch_source(request["source"], entry)
+        request["watch_names"] = identity["watch_names"] = list(watch_names)
     if expected_source_sha256 is not None and identity["source_sha256"] != expected_source_sha256:
         raise ValueError("selected source version changed; no execution attempted")
     if expected_input_sha256 is not None and identity["input_sha256"] != expected_input_sha256:
@@ -1155,7 +1227,7 @@ def run_experiment(runtime: Path, source: Path, entry: str, inputs: Path, run_ro
             if (unchanged and runtime_unchanged and bundle_unchanged and process.ok
                 and not process.output_truncated and not process.capture_errors) else None)
     if trace_lines:
-        report["reported_trace"] = (_reported_trace(host, request["source"])
+        report["reported_trace"] = (_reported_trace(host, request["source"], watch_names=watch_names)
             if (unchanged and runtime_unchanged and bundle_unchanged and process.ok
                 and not process.output_truncated and not process.capture_errors
                 and report["reported_result"] is not None) else None)

@@ -112,8 +112,9 @@ It does not use your project's installed dependencies or run AI-generated tests.
 You can manually enter JSON arguments or carry over supported literal arguments
 from a source call. Ambiguous, attribute, and nonliteral calls remain navigation
 only. Optional module selection is explicit, limited to four files / 64 KiB total.
-Single-file line visits are guest-reported positions, not variable values or a
-complete execution proof.
+Single-file line visits can optionally include 1–3 named local-value snapshots;
+see the [watch walkthrough](isolated-experiments.md#watch-a-few-local-values).
+These remain untrusted guest reports.
 
 Pin a completed single-file trial as A, then explicitly run a new input as B.
 Comparison requires matching source, entry, runtime, and trace policy. Editing

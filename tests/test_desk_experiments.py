@@ -82,6 +82,84 @@ class DeskExperimentTests(fixtures.DeskFixture):
             guard.assert_not_called()
         self.assertIsNone(self.desk.experiment_worker)
 
+    def test_watched_locals_bind_input_preserve_a_and_detach_public_snapshots(self):
+        payload = {**self.payload(), "trace_lines": True, "watch_names": ["value"]}
+        before = self.reading_state()
+        baseline = {"id": "retained-a", "version": self.desk.project["version"]}
+        self.desk._trial_baseline = json.dumps({"view": baseline}).encode()
+        retained = self.desk._trial_baseline
+        watch = {"names": ["value"], "truncated": False, "events": [
+            {"event": "line", "line": 5, "call_id": 1, "values": {
+                "value": {"state": "value", "json": "9007199254740993"}}}]}
+        report = self.report()
+        report["reported_trace"] = {"line_events": [5], "truncated": False, "hook_intact": True, "watch": watch}
+        with patch.object(experiments, "run_experiment", return_value=report) as runner, \
+                patch.object(experiments, "retain_trial_result", side_effect=AssertionError("watched report cannot become A")):
+            self.desk.start_experiment(payload)
+            self.join_experiment()
+        job = self.desk.experiment_status()
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(runner.call_args.kwargs["watch_names"], ("value",))
+        self.assertIs(runner.call_args.kwargs["trace_lines"], True)
+        self.assertEqual(runner.call_args.kwargs["expected_input_sha256"],
+            hashlib.sha256(payload["input_text"].encode()).hexdigest())
+        self.assertEqual(job["watch_names"], ["value"])
+        self.assertEqual(job["reported_trace"]["watch"], watch)
+        self.assertEqual(job["input_text"], payload["input_text"])
+        self.assertEqual(self.reading_state(), before)
+        self.assertEqual(self.desk._trial_baseline, retained)
+        self.assertEqual(job["input_comparison"]["baseline"], baseline)
+        self.assertIs(job["input_comparison"]["can_pin"], False)
+        self.assertIsNone(job["input_comparison"]["current_report_sha256"])
+        self.assertEqual(job["input_comparison"]["outcome"], "unavailable")
+        revision = job["input_comparison"]["revision"]
+        with self.assertRaises(ValueError):
+            self.desk.set_trial_baseline({"id": job["id"], "version": job["version"], "revision": revision})
+        job["watch_names"].append("changed")
+        job["reported_trace"]["watch"]["events"][0]["values"]["value"]["json"] = "0"
+        unchanged = self.desk.experiment_status()
+        self.assertEqual(unchanged["watch_names"], ["value"])
+        self.assertEqual(unchanged["reported_trace"]["watch"]["events"][0]["values"]["value"]["json"], "9007199254740993")
+        self.desk.set_trial_baseline({"id": baseline["id"], "version": baseline["version"], "revision": revision}, clear=True)
+        self.assertIsNone(self.desk._trial_baseline)
+
+    def test_invalid_watch_options_allocate_no_run_or_worker(self):
+        payload = {**self.payload(), "trace_lines": True}
+        before = set(self.desk.root.iterdir())
+        invalid = [{**payload, "watch_names": names} for names in (
+            None, False, "value", [], ["value", "value"], ["a", "b", "c", "d"],
+            [1], ["not-valid"], ["a" * 65], ["名稱"], ["class"], ("value",))]
+        invalid += [{**payload, "watch_names": ["value"], **options} for options in (
+            {"trace_lines": False}, {"generator_steps": 2},
+            {"modules": [payload["file"]], "module_set_sha256": "a" * 64}, {"mode": "head_current"})]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.desk.start_experiment(value)
+        self.assertEqual(set(self.desk.root.iterdir()), before)
+        self.assert_no_operations()
+
+    def test_watched_trace_cannot_survive_incomplete_or_cancelled_run(self):
+        payload = {**self.payload(), "trace_lines": True, "watch_names": ["value"]}
+        for cancelled in (False, True):
+            report = self.report()
+            report["reported_trace"] = {"line_events": [5], "truncated": False, "hook_intact": True,
+                "watch": {"names": ["value"], "events": [], "truncated": False}}
+            def run(*args, **kwargs):
+                if cancelled:
+                    self.desk.experiment_cancel_event.set()
+                else:
+                    report["source_unchanged"] = False
+                return report
+            with self.subTest(cancelled=cancelled), patch.object(experiments, "run_experiment", side_effect=run):
+                self.desk.start_experiment(payload)
+                self.join_experiment()
+                job = self.desk.experiment_status()
+                self.assertEqual(job["watch_names"], ["value"])
+                self.assertIsNone(job.get("reported_trace"))
+                self.assertIsNone(job["input_comparison"]["current_report_sha256"])
+                self.assertIs(job["input_comparison"]["can_pin"], False)
+
+
     def test_default_off_browsing_and_context_never_enable_execution(self):
         desk = desk_module.ReadingDesk(self.source)
         self.addCleanup(desk.close)
@@ -224,9 +302,11 @@ class DeskExperimentTests(fixtures.DeskFixture):
                 self.desk.start_experiment({**self.payload(), **extra})
                 self.join_experiment()
                 self.assertNotIn("trace_lines", run.call_args.kwargs)
+                self.assertNotIn("watch_names", run.call_args.kwargs)
                 self.assertNotIn("expected_input_sha256", run.call_args.kwargs)
                 job = self.desk.experiment_status()
                 self.assertNotIn("trace_lines", job)
+                self.assertNotIn("watch_names", job)
                 self.assertNotIn("reported_trace", job)
 
     def test_incomplete_trace_cannot_survive_drift_process_output_or_runtime_failure(self):

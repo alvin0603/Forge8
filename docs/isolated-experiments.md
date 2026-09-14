@@ -273,8 +273,8 @@ This remains **guest-reported, untrusted** data. At most 1,000 line events are
 captured during the explicit function call, after module initialization and before
 exception formatting/result serialization. Only original compiled code identities
 from that module qualify; external code and dynamically generated code with the
-same filename do not. No locals, frame graph, argument values or intermediate
-values are captured. A line event precedes execution, not successful completion.
+same filename do not. Local values are captured only when explicitly enabled below;
+no frame graph is retained. A line event precedes execution, not successful completion.
 
 `truncated` means only a prefix was retained. `hook_intact` checks the installed
 hook at call end, not continuous observation; even `true` does not prove completeness.
@@ -287,6 +287,42 @@ automatic untraced retry. The existing time/memory/output caps stay unchanged.
 Default-off, selected-module and paired-trial behavior is unchanged; enabling
 tracing with extra modules is refused. Reports are not converted to host `observe`
 captures or fed back to a model as verified claims.
+
+### Watch a few local values
+
+Use this when line visits alone do not explain a loop or a caught exception.
+With the optional runtime installed, open the example desk:
+
+```text
+forge8 read examples/isolated-functions --allow-experiments
+```
+
+1. Prepare [sum_rows.py](../examples/isolated-functions/sum_rows.py) and its
+   `sum_rows` function. Leave extra modules and generator steps off.
+2. Paste `{"args":[["4","bad","6"]],"kwargs":{}}`, enable line recording,
+   and enter `total, rejected, row` in the local-variable field.
+3. Confirm execution, then use the previous/next event and source-view controls.
+   At line 12, before the handler increments `rejected`, expect `row` to be
+   `"bad"`, `total` to be `4` and `rejected` to be `0`. The reported return should
+   be `{"total":10,"rejected":1}`.
+
+These are snapshots **before** a line runs, plus return/exception boundary events;
+a return event can also be exception unwinding. Recursive calls have separate IDs.
+Values remain JSON text, including large integers. An unbound name is distinct
+from `null`; unsupported or over-limit values are labelled, never replaced by guesses.
+
+Save the same input as `input.json` for the CLI equivalent:
+
+```text
+forge8 experiment run examples/isolated-functions/sum_rows.py --entry sum_rows --input input.json --allow-execution --trace-lines --watch-local total --watch-local rejected --watch-local row
+```
+
+Choose 1–3 unique ASCII local names, not expressions or attributes. Only the
+original undecorated synchronous, non-generator entry is watched, not its helpers.
+Watching cannot combine with extra modules, paired trials or A/B comparison;
+an existing A stays intact. Editing names changes only the next-call draft, and
+reload retrieves the submitted report without rerunning it. Clear the names to
+return to line-only recording. All reports remain untrusted; nothing goes to a model.
 
 ### Compare HEAD and current with the same input
 

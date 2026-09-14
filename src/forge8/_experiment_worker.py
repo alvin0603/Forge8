@@ -5,8 +5,10 @@ Guest output is untrusted data, not a verification of any explanation.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import keyword
 import os
 from pathlib import Path
 import stat
@@ -117,6 +119,72 @@ def consume_generator(result, limit):
 request = json.loads(sys.argv[1])
 trace_enabled = request.get("trace_lines", False)
 trace_report = None
+watch_names = request.get("watch_names", [])
+if watch_names:
+    import math
+    watch_type, watch_id, watch_len = type, id, len
+    watch_types = (type(None), bool, int, float, str, list, dict)
+    watch_dump, watch_finite = json.dumps, math.isfinite
+    watch_function = types.FunctionType
+
+    class WatchUnsupported(Exception):
+        pass
+
+    class WatchLimited(Exception):
+        pass
+
+    def watch_snapshot(value):
+        # Emit detached JSON text, never repr, object attributes or user hooks.
+        nodes, remaining, active = 0, 2048, set()
+
+        def encode(item, depth=0):
+            nonlocal nodes, remaining
+            nodes += 1
+            if nodes > 128:
+                raise WatchLimited
+            kind = watch_type(item)
+            if not any(kind is allowed for allowed in watch_types):
+                raise WatchUnsupported
+            if kind is float and not watch_finite(item):
+                raise WatchUnsupported
+            if ((kind is str and watch_len(item) > 2048)
+                    or (kind is int and int.bit_length(item) > 7000)):
+                raise WatchLimited
+            if kind is list or kind is dict:
+                if depth >= 6 or watch_len(item) > 128:
+                    raise WatchLimited
+                identity = watch_id(item)
+                if identity in active:
+                    raise WatchUnsupported
+                active.add(identity)
+                remaining -= 2 + max(0, watch_len(item) - 1)
+                if remaining < 0:
+                    raise WatchLimited
+                if kind is dict:
+                    keys = list(item)
+                    if any(watch_type(key) is not str for key in keys):
+                        raise WatchUnsupported
+                    keys.sort()
+                    remaining -= watch_len(keys)
+                    pieces = [encode(key, depth + 1) + ":" + encode(item[key], depth + 1) for key in keys]
+                    text = "{" + ",".join(pieces) + "}"
+                else:
+                    text = "[" + ",".join(encode(part, depth + 1) for part in item) + "]"
+                active.remove(identity)
+                return text
+            text = watch_dump(item, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+            remaining -= watch_len(text)
+            if remaining < 0:
+                raise WatchLimited
+            return text
+
+        try:
+            return {"state": "value", "json": encode(value)}
+        except WatchUnsupported:
+            return {"state": "unsupported"}
+        except WatchLimited:
+            return {"state": "limited"}
+
 if trace_enabled:
     # Keep original hooks and strong references before module initialization.
     # This is diagnostic guest reporting, not protection from guest tampering.
@@ -144,6 +212,12 @@ try:
         scope = module.__dict__
     else:
         compiled = compile(request["source"], "experiment.py", "exec")
+        if watch_names:
+            selected = [code for code in compiled.co_consts
+                        if watch_type(code) is types.CodeType and code.co_name == request["entry"]]
+            if len(selected) != 1:
+                raise ValueError("watched entry has no unique original code object")
+            watch_code = selected[0]
         if trace_enabled:
             pending = [compiled]
             while pending:
@@ -154,14 +228,60 @@ try:
         exec(compiled, scope)
     phase = "call"
     if trace_enabled:
+        if watch_names:
+            selected = scope[request["entry"]]
+            if (watch_type(selected) is not watch_function or selected.__code__ is not watch_code
+                    or watch_code.co_flags & (0x20 | 0x80 | 0x200)
+                    or any(name not in watch_code.co_varnames + watch_code.co_cellvars for name in watch_names)):
+                raise ValueError("watching requires the original synchronous entry and selected local names")
         trace_report = {"line_events": [], "truncated": False, "hook_intact": False}
         trace_active = True
+        if watch_names:
+            watch = {"names": watch_names, "events": [], "truncated": False}
+            trace_report["watch"] = watch
+            watch_frames, watch_next = {}, 0
+            watch_size = len(watch_dump(watch, ensure_ascii=True, separators=(",", ":")))
+
+            def watch_event(frame, event):
+                global watch_next, watch_size
+                if frame.f_code is not watch_code or watch["truncated"]:
+                    return
+                frame_id = watch_id(frame)
+                if event == "call":
+                    watch_next += 1
+                    if watch_next > 128:
+                        watch["truncated"] = True
+                    else:
+                        watch_frames[frame_id] = watch_next
+                    return
+                if event not in ("line", "return", "exception") or frame_id not in watch_frames:
+                    return
+                values, local = {}, frame.f_locals
+                for name in watch_names:
+                    try:
+                        value = local[name]
+                    except KeyError:
+                        values[name] = {"state": "unbound"}
+                    else:
+                        values[name] = watch_snapshot(value)
+                observation = {"event": event, "line": frame.f_lineno,
+                               "call_id": watch_frames[frame_id], "values": values}
+                size = len(watch_dump(observation, ensure_ascii=True, separators=(",", ":"))) + bool(watch["events"])
+                if len(watch["events"]) >= 128 or watch_size + size > 24 * 1024:
+                    watch["truncated"] = True
+                else:
+                    watch["events"].append(observation)
+                    watch_size += size
+                if event == "return":
+                    del watch_frames[frame_id]
 
         def trace_call(frame, event, arg):
             # Code objects compare structurally: use identities, not equality
             # or a guest-controlled filename. Do not retain frame/arg/locals.
             if not trace_active or id(frame.f_code) not in trace_ids:
                 return None
+            if watch_names:
+                watch_event(frame, event)
             if event == "line":
                 if len(trace_report["line_events"]) < 1000:
                     trace_report["line_events"].append(frame.f_lineno)
@@ -171,7 +291,7 @@ try:
 
         try:
             trace_set(trace_call)
-            result = scope[request["entry"]](*request["input"]["args"], **request["input"]["kwargs"])
+            result = (selected if watch_names else scope[request["entry"]])(*request["input"]["args"], **request["input"]["kwargs"])
         finally:
             # Even an audit hook refusing settrace(None) must not extend
             # capture into exception formatting or result serialization.
@@ -295,6 +415,20 @@ def _validate_generator_steps(value) -> None:
         raise ValueError("generator_steps must be an integer from 1 to 12")
 
 
+def _validate_watch_names(value: tuple[str, ...]) -> None:
+    if (type(value) is not tuple or len(value) > 3
+            or any(type(name) is not str or not 1 <= len(name) <= 64
+                   or not name.isascii() or not name.isidentifier() or keyword.iskeyword(name) for name in value)
+            or len(set(value)) != len(value)):
+        raise ValueError("watch_names must be up to three unique ASCII local names, each at most 64 characters")
+
+
+def _validate_watch_source(source: str, entry: str) -> None:
+    selected = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == entry]
+    if len(selected) != 1 or selected[0].decorator_list:
+        raise ValueError("watching requires one undecorated synchronous top-level function")
+
+
 def execute(root: Path, request: dict, cache_pin: dict, *,
             module_bundle: dict | None = None, request_path: Path | None = None) -> dict:
     trace_lines = request.get("trace_lines", False)
@@ -306,6 +440,13 @@ def execute(root: Path, request: dict, cache_pin: dict, *,
         _validate_generator_steps(request["generator_steps"])
         if trace_lines or module_bundle is not None or "module_bundle" in request:
             raise ValueError("generator consumption requires an untraced single-file trial")
+    if "watch_names" in request:
+        names = request["watch_names"]
+        if (type(names) is not list or not names or not trace_lines or "generator_steps" in request
+                or module_bundle is not None or "module_bundle" in request):
+            raise ValueError("watching requires nonempty names and a single-file line trace")
+        _validate_watch_names(tuple(names))
+        _validate_watch_source(request["source"], request["entry"])
     modules = None if module_bundle is None else _module_bundle_directory(request_path, module_bundle)
     if modules is not None:
         request = {**request, "module_bundle": {key: module_bundle[key] for key in ("entry_module", "top_levels")}}

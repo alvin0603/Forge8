@@ -98,6 +98,7 @@ footer { padding: 10px 20px; color: #83948c; font-size: 10px; text-align: right;
 .experiment-input-state { margin-top: 8px; padding: 6px 8px; color: #795720; background: #fff0cd; border-left: 3px solid #bd8b2c; }
 .experiment-trace-option { display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; }.experiment-trace-option input { width: auto; flex-shrink: 0; margin: 3px 0 0; }
 .experiment-trace-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }.experiment-trace-controls label { margin: 0; }.experiment-trace-controls input { width: 76px; margin: 0; }.experiment-trace-controls button { font-size: 12px; }
+#experiment-watch-values pre { max-height: 100px; margin: 3px 0 8px; }#experiment-watch-values h4 { overflow-wrap: anywhere; }
 .experiment-trace-current { background: #fff0cd; font-weight: 600; }#experiment-trace p { overflow-wrap: anywhere; }
 .experiment-module-options { max-height: 150px; overflow: auto; margin: 8px 0; }.experiment-module-options label { display: flex; align-items: flex-start; gap: 7px; font-weight: 400; overflow-wrap: anywhere; }.experiment-module-options input { width: auto; margin: 3px 0 0; flex-shrink: 0; }#experiment-modules > p { margin: 8px 0; }#experiment-module-prepare { margin-top: 6px; font-size: 12px; }
 .experiment-io { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin-top: 10px; }.experiment-io > div { min-width: 0; }

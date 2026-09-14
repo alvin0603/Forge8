@@ -1750,7 +1750,7 @@ def _run_reading_cli(
 
 def _run_experiment_cli(args: argparse.Namespace) -> int:
     """Explicit CPU-only workflow, separate from reading and model check tools."""
-    from .experiments import RUNTIME_NAME, native_platform, run_experiment, setup_runtime
+    from .experiments import RUNTIME_NAME, _validate_watch_names, native_platform, run_experiment, setup_runtime
     run_root = None
     try:
         if args.experiment_action == "run" and not args.allow_execution:
@@ -1787,6 +1787,12 @@ def _run_experiment_cli(args: argparse.Namespace) -> int:
                 if module_options:
                     raise ValueError("--generator-steps requires a single-file trial without --trace-lines")
                 module_options["generator_steps"] = args.generator_steps
+            watch_names = tuple(getattr(args, "watch_local", None) or ())
+            _validate_watch_names(watch_names)
+            if watch_names:
+                if not args.trace_lines or args.generator_steps is not None or args.module_root is not None or args.module_file is not None:
+                    raise ValueError("--watch-local requires --trace-lines, one source file and no generator steps")
+                module_options["watch_names"] = watch_names
             run_root = _fix_runs_parent(runtime.parent, source_root=args.source.parent.resolve()) / _new_task_id("experiment")
             print("Executing the complete selected module(s), including package initialization, in CPython/WASI, then one JSON call; "
                 "no host project mount, no GPU. 5s guest / 10s worker wait, plus setup/cleanup. Ctrl+C cancels.", file=sys.stderr, flush=True)
@@ -1829,6 +1835,15 @@ def _run_experiment_cli(args: argparse.Namespace) -> int:
                         print("The guest trace hook changed; the path is incomplete.")
                     if not trace["line_events"]:
                         print("No selected-source visits reported; this does not prove no work occurred.")
+                    if "watch" in trace:
+                        watch = trace["watch"]
+                        print("Selected entry locals: untrusted snapshots before lines; return events may be unwinding.")
+                        for event in watch["events"]:
+                            values = ", ".join(name + "=" + (value["json"] if value["state"] == "value" else "[" + value["state"] + "]")
+                                for name, value in event["values"].items())
+                            print(_inert_text(f'Call #{event["call_id"]}, {event["event"]} at L{event["line"]}: {values}'))
+                        if watch["truncated"]:
+                            print("Watched snapshots reached an event or byte limit; later values are unavailable.")
             for name, text in execution.get("guest_output", {}).items():
                 if reported is not None and name == "stdout":
                     text = "\n".join(line for line in text.splitlines() if not line.startswith("FORGE8_GUEST_RESULT="))
@@ -1888,7 +1903,8 @@ def build_parser() -> argparse.ArgumentParser:
     experiment_run.add_argument("--module-root", type=Path, help="explicit import root for selected-module mode; no guessing of src layout")
     experiment_run.add_argument("--module-file", action="append", metavar="PATH", help="repeat for ALL selected relative .py paths, including entry and required __init__.py; at most 4 files / 64 KiB total")
     experiment_run.add_argument("--allow-execution", action="store_true", help="explicitly authorize selected module/package initialization and one function call in the separate WASI environment")
-    experiment_run.add_argument("--trace-lines", action="store_true", help="opt in to at most 1000 guest-reported call-phase source line visits; single-file only, no values or model validation")
+    experiment_run.add_argument("--trace-lines", action="store_true", help="opt in to at most 1000 guest-reported call-phase source line visits; single-file only, not model validation")
+    experiment_run.add_argument("--watch-local", action="append", metavar="NAME", help="with --trace-lines, watch up to 3 declared entry locals; repeat once per name; untrusted bounded snapshots")
     experiment_run.add_argument("--generator-steps", type=int, choices=range(1, 13), metavar="N",
         help="advance a returned generator at most N times (1-12), then close; single-file only, no tracing; yields are untrusted JSON snapshots")
     for command in (experiment_setup, experiment_run):

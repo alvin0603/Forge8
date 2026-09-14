@@ -2,7 +2,7 @@
 
 - **Status:** implemented `forge8 fix` and read-only `explain` / `read` boundaries,
   not an OS sandbox
-- **Last reviewed:** 2026-09-10
+- **Last reviewed:** 2026-09-14
 - **Scope:** single-user native Windows and native WSL, using separate native
   Python and model-server processes
 
@@ -652,7 +652,7 @@ executes the target Python source to obtain these events.
 
 The guest keeps at most 1,000 ordered line numbers, filtering original compiled
 code-object identities, including nested same-file code. It stops collecting before
-exception formatting/serialization. It does not collect locals, frames or values,
+exception formatting/serialization. By default it collects no locals, frames or values,
 and excludes foreign/generated code even with a matching filename. This is a
 best-effort guest mechanism: target code can interfere with the hook or protocol.
 `hook_intact` checks call-end hook identity, not continuity; a line event does not
@@ -673,6 +673,33 @@ not execute, ask a model, replace reading selections or persist new browser stat
 Guest reports remain distinct from host `observe` captures and are never promoted
 to trusted observations or automatically fed back as verified prose.
 [Workflow and actual evidence](isolated-experiments.md#inspect-guest-reported-call-line-visits).
+
+### Optional watched locals
+
+`watch_names` adds 1–3 unique ASCII local identifiers (1–64 characters, no Python
+keywords) to a single-file line trace; CLI `--watch-local NAME` is repeatable.
+Default-off names are bound to request/report identity. Watching requires the
+original undecorated synchronous non-generator entry and declared locals.
+Replacements are refused before its call; whole-module initialization can already
+have run. Only that entry's original code frames, including recursion, are watched.
+
+Events carry physical lines, call IDs and selected locals. Line snapshots precede
+execution; return events can be exception unwind. No event argument, exception
+object or frame graph is captured. Names cannot evaluate expressions/attributes,
+and values never use custom representations. Only exact None, bool, int, finite
+float, str, list and string-key dict values become detached canonical ASCII JSON
+text. Subclasses and other types are unsupported; large integers stay exact in
+the browser. Unbound, unsupported and limited states differ from JSON `null`.
+
+Limits are six nested containers, 128 nodes including dictionary keys and 2,048
+ASCII bytes per value; 128 events and 24 KiB for the entire escaped watch object.
+The host validates these bounds, exact names/order/states and nested call IDs.
+Existing result, source/input/runtime, complete-output and cleanup gates remain.
+Infrastructure failure or cancellation cannot publish a usable watch. Guest code
+can interfere; neither hook identity nor non-truncation proves completeness or
+causality. Values may contain secrets and remain private. No model feedback,
+extra module/paired mode, A/B comparison or larger WASI limit is added.
+An existing A is preserved; watched trials cannot replace it.
 
 ## Optional bounded generator consumption
 

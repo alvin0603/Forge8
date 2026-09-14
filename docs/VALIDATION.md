@@ -114,6 +114,33 @@ reported `ValueError` on the first advance. Calls took 0.89–0.98 s on Windows
 and 3.93–4.10 s on WSL, including verification. These are six observations,
 not a latency benchmark.
 
+## Watched local values
+
+September 14 checks completed 17 actual WASI calls on each native host. Cases
+covered caught exceptions, recursion, detached mutable values, null versus
+unbound names, unsupported objects, size/event limits, refused entry replacements
+and a real guest timer interruption. They also exercised unchanged CPython
+`textwrap.dedent` and the included `sum_rows` example. All workers exited normally;
+source, runtime, input and captured-output checks passed. Interrupted or
+infrastructure-failed trials published no usable partial watch report.
+
+For `sum_rows(["4", "bad", "6"])`, the line-12 snapshot showed `total=4`,
+`rejected=0`, `row="bad"` before the handler increment. The final return was
+`{"total":10,"rejected":1}`. This call took 0.97 s on Windows and 4.07 s on WSL,
+including verification: two observations, not a latency benchmark.
+
+Real Edge journeys against both native services made two further calls each.
+They checked retained A, watched values beside highlighted source, separate
+submitted/draft names, GET-only reload, and 390/1440-pixel layouts using explicit
+step navigation and scrolling. Question, source selection and initially empty
+history survived; populated history is covered by mocked regressions.
+
+The complete local suite passed 1,452 Python tests per host: WSL 94.4 s (12 skips),
+Windows Python 3.10 155.3 s (35 skips). All seven Node harnesses passed on each;
+Windows setup passed 21 assertions without downloads or native launches.
+This is bounded inspection of guest-reported values, not a new tracing algorithm
+or evidence of improved model reasoning. No model was called in these journeys.
+
 ## Model quality and waiting time
 
 The public desk reader is Qwen3.5-9B Q4_K_M with llama.cpp b10621, an 8K context
@@ -130,6 +157,13 @@ and improved accepted delivery from 6/9 to 9/9. The variant allowed one referenc
 per source read, but sometimes chose narrower spans or omitted a useful reference
 entirely. It was not adopted: valid references and fewer failures did not justify
 making source verification harder. Model prose did not become more accurate.
+
+A later 18-call context screen supplied five or six source ranges at 16K instead
+of three at 8K. Across two development tasks and three seeds, fully met rubric
+items increased from 9/36 to 18/36, but all six larger-context answers still
+failed acceptance. A further nine-call plain-output variant fell to 13/36 and
+left four task answers unfinished. Neither change shipped; these results do not
+establish a general quality gain from larger context or a different output format.
 
 One earlier four-question delivery check had only 2 fully correct answers on
 each native platform. Windows cold completion took about 73 s; WSL took about

@@ -75,6 +75,9 @@
         <details id="experiment-search-plan" hidden><summary>搜尋輸入預覽 · 完整清單</summary><ol id="experiment-search-inputs"></ol></details>
         <label id="experiment-trace-option" class="experiment-trace-option" hidden><input id="experiment-trace-lines" type="checkbox" aria-describedby="experiment-trace-option-note">記錄本次呼叫的原碼行（選用）</label>
         <p id="experiment-trace-option-note" class="muted" hidden>僅單檔；最多 1,000 次行事件，可能增加執行時間。勾選不執行，按下方執行才生效。</p>
+        <div id="experiment-watch-option" hidden><label for="experiment-watch-names">區域變數快照 · 下一次試跑（選用）</label>
+        <input id="experiment-watch-names" type="text" maxlength="200" placeholder="例如 total, row" autocomplete="off" spellcheck="false" aria-describedby="experiment-watch-note">
+        <p id="experiment-watch-note" class="muted" role="status"></p></div>
         <details id="experiment-generator-option" hidden><summary>逐步查看 generator（選用）</summary>
         <label>Generator · 下一次試跑 <select id="experiment-generator-steps" aria-describedby="experiment-generator-note">
           <option value="0">不推進（預設）</option><option value="1">最多 1 次 next()</option><option value="2">最多 2 次 next()</option><option value="3">最多 3 次 next()</option><option value="4">最多 4 次 next()</option><option value="5">最多 5 次 next()</option><option value="6">最多 6 次 next()</option><option value="7">最多 7 次 next()</option><option value="8">最多 8 次 next()</option><option value="9">最多 9 次 next()</option><option value="10">最多 10 次 next()</option><option value="11">最多 11 次 next()</option><option value="12">最多 12 次 next()</option>
@@ -100,18 +103,20 @@
         <p id="experiment-status" class="experiment-status" role="status" aria-live="polite"></p>
         <p id="experiment-input-state" class="experiment-input-state" role="status" hidden>輸入已修改；目前回報仍屬上次輸入。按執行才會產生新的回報。</p>
         <p id="experiment-generator-submitted" class="muted" role="status" hidden></p>
+        <p id="experiment-watch-submitted" class="muted" role="status" hidden></p>
         <section id="experiment-result" hidden aria-label="試跑回傳值或例外"><h4>程式回報的結果 · 未驗證</h4><pre id="experiment-result-text" tabindex="0"></pre></section>
         <section id="experiment-trace" hidden aria-labelledby="experiment-trace-title">
           <h4 id="experiment-trace-title">本次呼叫的行位置 · guest 回報，未驗證</h4>
           <p id="experiment-trace-summary" class="muted"></p>
           <details id="experiment-trace-input" hidden><summary>本次已送出的輸入（唯讀）</summary><p class="muted">此紀錄屬於上次明確送出的試跑；修改草稿或勾選設定不會改寫它。</p><pre id="experiment-trace-input-text" tabindex="0" aria-label="行位置紀錄的原始 JSON 輸入"></pre></details>
           <div id="experiment-trace-controls" class="experiment-trace-controls" hidden>
-            <label for="experiment-trace-step">第幾次行事件</label><input id="experiment-trace-step" type="number" min="1" max="1000" step="1" inputmode="numeric" aria-describedby="experiment-trace-position">
+            <label for="experiment-trace-step">第幾個事件</label><input id="experiment-trace-step" type="number" min="1" max="1000" step="1" inputmode="numeric" aria-describedby="experiment-trace-position">
             <button id="experiment-trace-prev" type="button" class="quiet">← 上一次</button><button id="experiment-trace-next" type="button" class="quiet">下一次 →</button><button id="experiment-trace-view" type="button" class="quiet">查看這一步原碼</button>
           </div>
           <p id="experiment-trace-position" class="muted"></p><p id="experiment-trace-note" class="muted" role="status"></p>
+          <div id="experiment-watch-values" aria-label="入口區域變數的 guest 快照，未驗證" hidden></div>
           <pre id="experiment-trace-source" tabindex="0" aria-label="本次行事件的保留原碼片段" hidden></pre>
-          <details><summary>紀錄範圍與限制</summary><p class="muted">行事件在該行執行前回報，不代表該行成功完成。只記錄本檔原始程式在呼叫階段的行位置（含同檔輔助函式），不含初始化、結果序列化、匯入／動態產生的程式碼或變數值。截斷、掛鉤中斷或零事件都不是完整路徑；掛鉤結束時仍在也不保證全程記錄。guest 可以干擾回報，這不驗證 AI 解釋；查看原碼不加入模型選段，也不執行程式。</p></details>
+          <details><summary>紀錄範圍與限制</summary><p class="muted">行事件在該行執行前回報，不代表該行成功完成。只記錄本檔原始程式在呼叫階段的行位置（含同檔輔助函式），不含初始化、結果序列化或匯入／動態產生的程式碼。選用變數快照僅含入口函式的指定區域名稱；每次遞迴呼叫獨立編號，不追蹤輔助函式變數。快照只比較同次呼叫，不能把前後差異歸因於某一行；return 事件也可能是例外展開。截斷、掛鉤中斷或零事件都不是完整路徑；掛鉤結束時仍在也不保證全程記錄。guest 可以干擾回報，這不驗證 AI 解釋；查看原碼不加入模型選段，也不執行程式。</p></details>
         </section>
         <section id="experiment-pair-result" hidden aria-label="HEAD 與目前版本的配對回報">
           <h4 id="experiment-pair-summary"></h4>

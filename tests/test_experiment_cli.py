@@ -15,6 +15,43 @@ from forge8 import cli, experiments
 
 
 class ExperimentCLITests(unittest.TestCase):
+    def test_watch_requires_explicit_trace_consent_and_valid_names_before_run_state(self):
+        options = [
+            ["--watch-local", "value"],
+            ["--trace-lines", "--watch-local", "value", "--watch-local", "value"],
+            ["--trace-lines", "--watch-local", "class"],
+            ["--trace-lines", "--watch-local", "名稱"],
+            ["--trace-lines", "--watch-local", "a" * 65],
+            ["--trace-lines", "--watch-local", "a", "--watch-local", "b", "--watch-local", "c", "--watch-local", "d"],
+            ["--trace-lines", "--watch-local", "value", "--generator-steps", "2"],
+            ["--trace-lines", "--watch-local", "value", "--module-root", str(self.source.parent), "--module-file", "owned.py"],
+        ]
+        for flags in options:
+            with self.subTest(flags=flags):
+                self.assertEqual(self.invoke(self.run_args() + flags)[0], 2)
+        self.assertEqual(self.invoke(self.run_args(consent=False) + ["--trace-lines", "--watch-local", "value"])[0], 2)
+        self.parent.assert_not_called()
+        self.run_call.assert_not_called()
+
+    def test_watch_forwards_tuple_and_prints_json_text_without_losing_integer_precision(self):
+        self.report["reported_trace"] = {"line_events": [1], "truncated": False, "hook_intact": True,
+            "watch": {"names": ["value", "other"], "truncated": True, "events": [
+                {"event": "line", "line": 1, "call_id": 1, "values": {
+                    "value": {"state": "value", "json": "9007199254740993"},
+                    "other": {"state": "unbound"}}},
+                {"event": "return", "line": 1, "call_id": 1, "values": {
+                    "value": {"state": "unsupported"}, "other": {"state": "limited"}}}]}}
+        code, output, _ = self.invoke(self.run_args(as_json=False) +
+            ["--trace-lines", "--watch-local", "value", "--watch-local", "other"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.run_call.call_args.kwargs,
+            {"allow_execution": True, "trace_lines": True, "watch_names": ("value", "other")})
+        for text in ("9007199254740993", "[unbound]", "[unsupported]", "[limited]",
+                "Call #1, return", "untrusted snapshots before lines", "return events may be unwinding",
+                "event or byte limit"):
+            self.assertIn(text, output)
+
+
     def test_generator_switch_requires_consent_and_forwards_exact_limit(self):
         self.assertEqual(self.invoke(self.run_args(consent=False) + ["--generator-steps", "3"])[0], 2)
         self.run_call.assert_not_called()

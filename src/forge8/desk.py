@@ -656,12 +656,12 @@ class ReadingDesk:
             return target
 
     def start_experiment(self, payload: dict) -> dict:
-        from .experiments import RUNTIME_NAME, _file, native_platform, prepare_inputs, retain_trial_result, run_experiment
+        from .experiments import RUNTIME_NAME, _file, _validate_watch_names, native_platform, prepare_inputs, retain_trial_result, run_experiment
         if type(payload) is dict and "mode" in payload:
             return self._start_paired_experiment(payload)
         expected = {"file", "version", "entry", "source_sha256", "input_text", "allow_execution"}
         shapes = (expected, expected | {"modules", "module_set_sha256"})
-        if (type(payload) is not dict or set(payload) - {"trace_lines", "generator_steps"} not in shapes
+        if (type(payload) is not dict or set(payload) - {"trace_lines", "generator_steps", "watch_names"} not in shapes
                 or payload["allow_execution"] is not True):
             raise ValueError("explicit whole-module execution consent and an exact target are required")
         trace_lines = payload.get("trace_lines", False)
@@ -672,9 +672,20 @@ class ReadingDesk:
             raise ValueError("generator_steps must be an integer from 1 to 12")
         if generator_steps is not None and (trace_lines or "modules" in payload):
             raise ValueError("generator steps require a single-file trial without line tracing")
+        watch_names = ()
+        if "watch_names" in payload:
+            if type(payload["watch_names"]) is not list or not 1 <= len(payload["watch_names"]) <= 3:
+                raise ValueError("watch_names must contain 1-3 local names")
+            watch_names = tuple(payload["watch_names"])
+            _validate_watch_names(watch_names)
+            if not trace_lines or "modules" in payload or generator_steps is not None:
+                raise ValueError("watched locals require single-file line tracing without generator steps")
         execution_options = {"trace_lines": True} if trace_lines else {}
+        if watch_names:
+            execution_options["watch_names"] = watch_names
         if generator_steps is not None:
             execution_options["generator_steps"] = generator_steps
+        public_options = {**execution_options, **({"watch_names": list(watch_names)} if watch_names else {})}
         with self.lock:
             if self._busy():
                 raise ValueError("only one model question or isolated experiment may run at a time")
@@ -711,12 +722,12 @@ class ReadingDesk:
             self.experiment_started = started
             self._trial_candidate = None
             self.experiment = {**target, "id": identifier, "status": "running",
-                "input_text": payload["input_text"], "elapsed_seconds": 0.0, **execution_options}
+                "input_text": payload["input_text"], "elapsed_seconds": 0.0, **public_options}
 
             def run():
                 try:
                     manifest_before = None
-                    if not module_options and generator_steps is None:
+                    if not module_options and generator_steps is None and not watch_names:
                         try:
                             manifest_before = _file(runtime / "runtime.json", 512 * 1024)
                         except (ValueError, OSError, TypeError):
@@ -785,7 +796,7 @@ class ReadingDesk:
                         if cancellation.is_set() and not self.experiment.get("cleanup_unknown"):
                             self._trial_candidate = None
                             self.experiment = {**target, "id": identifier, "status": "cancelled",
-                                "input_text": payload["input_text"], **execution_options}
+                                "input_text": payload["input_text"], **public_options}
                         self.experiment["elapsed_seconds"] = round(time.monotonic() - started, 2)
 
             self.experiment_worker = threading.Thread(target=run, name="forge8-isolated-experiment")
@@ -1038,7 +1049,7 @@ class ReadingDesk:
             value = dict(self.experiment)
             if "module_set" in value:
                 value["module_set"] = deepcopy(value["module_set"])
-            for key in ("before", "observations", "search"):
+            for key in ("before", "observations", "search", "watch_names", "reported_trace"):
                 if key in value:
                     value[key] = deepcopy(value[key])
             if value["status"] in {"running", "cancelling"}:
@@ -1055,7 +1066,7 @@ class ReadingDesk:
         candidate = self._trial_candidate
         current = trial_result_view(candidate) if candidate is not None else None
         eligible = (not self.closed and not alive and self.experiment.get("status") == "completed"
-            and "generator_steps" not in self.experiment
+            and "generator_steps" not in self.experiment and not self.experiment.get("watch_names")
             and self.experiment.get("source_unchanged") is True and self.experiment.get("runtime_unchanged") is True
             and self.experiment.get("cleanup_unknown") is not True and current is not None
             and current["id"] == self.experiment["id"] and current["version"] == self.project["version"]
