@@ -91,6 +91,13 @@ consume the entire project and can miss relevant code. Up to three model request
 may take minutes; the default resident desk reuses its model. CLI equivalents are
 `forge8 locate PROJECT --question "..."` and `forge8 ask PROJECT --question "..."`.
 
+A file with unsupported syntax or an oversized definition index does not block
+discovery in other files. The desk lists each unindexed Python file and its reason;
+open it for manual reading. Its bytes remain in the checked snapshot, but its
+functions cannot be selected by discovery. If no functions can be indexed,
+discovery stops before starting a model. Indexed-function counts exclude these
+unavailable files; they are not whole-project coverage.
+
 Expand the reading-history and export controls to revisit completed questions.
 Continuing reuses the selected question's exact source, not old answers or memory.
 Write the new question in full. When a genuine insufficient-source result offers

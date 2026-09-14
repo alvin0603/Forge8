@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -349,6 +350,9 @@ class DiscoveryTests(unittest.TestCase):
                     reader=reader, acceptance_gate=gate)
                 self.assertTrue(outcome.ok, outcome.failure_reason)
                 self.assertEqual(len(backend.requests), 2)
+                self.assertEqual(catalogue.unindexed, ())
+                self.assertNotIn("unindexed", json.loads(catalogue.input_bytes()))
+                self.assertNotIn("unindexed", outcome.as_dict())
                 self.assertEqual([row["id"] for row in outcome.candidates], chosen)
                 gate.assert_called_once()
                 first, second = backend.requests
@@ -609,8 +613,184 @@ class DiscoveryTests(unittest.TestCase):
                 "\n".join(f"def f{i}(): pass" for i in range(301)), "value = 1\n"):
             with self.subTest(source=source[:30]):
                 (self.source / "app.py").write_text(source, encoding="utf-8")
-                with self.assertRaises(ValueError):
-                    discovery.prepare_discovery(self.prepare())
+                prepared = self.prepare()
+                with self.assertRaisesRegex(ValueError, "No Python function definitions"):
+                    discovery.prepare_discovery(prepared)
+                self.assertFalse((prepared.run_root / "discovery-input.json").exists())
+
+    def test_mixed_catalogue_keeps_healthy_definitions_and_bound_unindexed_paths(self):
+        (self.source / "app.py").write_text(self.text + "def helper(): return 8\n", encoding="utf-8")
+        sources = {"broken.py": ("def broken(\n", "unavailable", "syntax_or_version"),
+            "split.pyi": ("# split\u2028here\ndef omitted(): ...\n", "unavailable", "line_separators"),
+            "limited.py": ("\n".join(f"def omitted_{i}(): pass" for i in range(301)), "limited", "item_limit")}
+        for name, (text, _status, _reason) in sources.items():
+            (self.source / name).write_text(text, encoding="utf-8")
+        prepared = self.prepare()
+        catalogue = discovery.prepare_discovery(prepared)
+        expected = [{"file": str(index), "path": fingerprint.path,
+            "status": sources[fingerprint.path][1], "reason": sources[fingerprint.path][2]}
+            for index, fingerprint in enumerate(prepared.snapshot.fingerprints) if fingerprint.path in sources]
+        self.assertEqual([dict(row) for row in catalogue.unindexed], expected)
+        self.assertIsInstance(catalogue.unindexed, tuple)
+        self.assertIsNone(catalogue.files)
+        self.assertTrue(catalogue.context.startswith(
+            "COMPLETE ADMITTED FILE MAP / AVAILABLE PYTHON FUNCTION CATALOGUE\n"))
+        self.assertEqual([row["name"] for row in catalogue.candidates.values()], ["begin", "helper"])
+        self.assertEqual(list(catalogue.candidates), ["D0001", "D0002"])
+        for fingerprint in prepared.snapshot.fingerprints:
+            self.assertIn("FILE " + fingerprint.path, catalogue.context)
+        for row in expected:
+            self.assertIn(row["reason"], catalogue.context)
+            self.assertEqual(set(row), {"file", "path", "status", "reason"})
+        for absent in ("omitted_0", "SOURCE MUST NEVER EXECUTE", "BODY_ONLY_NOT_A_SUMMARY"):
+            self.assertNotIn(absent, catalogue.context)
+        self.assertEqual(json.loads(catalogue.input_bytes())["unindexed"], expected)
+        self.assertEqual((prepared.run_root / "discovery-input.json").read_bytes(), catalogue.input_bytes())
+        self.assertEqual(hashlib.sha256(catalogue.input_bytes()).hexdigest(), catalogue.catalogue_sha256)
+        with self.assertRaises(TypeError):
+            catalogue.unindexed[0]["reason"] = "changed"
+        backend, gate = ScriptedBackend(['{"candidates":["D0002","D0001"]}']), Mock(side_effect=passing_gate)
+        outcome = discovery.run_discovery(prepared, catalogue, backend, model="test-model",
+            reader="qwen35", acceptance_gate=gate)
+        self.assertTrue(outcome.ok, outcome.failure_reason)
+        self.assertEqual(len(backend.requests), 1)
+        self.assertEqual(outcome.as_dict()["unindexed"], expected)
+        self.assertEqual([row["name"] for row in outcome.candidates], ["helper", "begin"])
+        self.assertEqual(json.loads((prepared.run_root / "discovery.json").read_text(
+            encoding="utf-8"))["unindexed"], expected)
+        gate.assert_called_once()
+
+    def test_partial_catalogue_preserves_every_supported_outline_failure_reason(self):
+        (self.source / "blocked.py").write_text("def not_selectable(): pass\n", encoding="utf-8")
+        original = discovery._python_outline
+        reasons = [("unavailable", reason) for reason in ("line_separators", "parse_depth", "syntax_or_version")]
+        reasons += [("limited", reason) for reason in ("source_limit", "node_limit", "item_limit", "metadata_limit")]
+        for status, reason in reasons:
+            with self.subTest(status=status, reason=reason):
+                def outline(path, text):
+                    return {"status": status, "items": [], "reason": reason} if path == "blocked.py" else original(path, text)
+
+                with patch.object(discovery, "_python_outline", side_effect=outline):
+                    catalogue = discovery.prepare_discovery(self.prepare())
+                self.assertEqual([dict(row) for row in catalogue.unindexed], [
+                    {"file": "1", "path": "blocked.py", "status": status, "reason": reason}])
+                self.assertEqual(list(catalogue.candidates), ["D0001"])
+                self.assertIn(reason, catalogue.context)
+                self.assertNotIn("not_selectable", catalogue.context)
+                for invalid in ("D0002", "blocked.py", "1"):
+                    with self.assertRaises(ValueError):
+                        discovery._parse_candidates(json.dumps({"candidates": [invalid]}), catalogue)
+
+    def test_partial_large_catalogue_keeps_complete_available_files_and_definitions(self):
+        self.large_source()
+        (self.source / "blocked.py").write_text("def broken(\n", encoding="utf-8")
+        prepared = self.prepare()
+        catalogue = discovery.prepare_discovery(prepared)
+        self.assertIsNotNone(catalogue.files)
+        self.assertEqual(len(catalogue.candidates), 126)
+        self.assertNotIn("blocked.py", catalogue.files.values())
+        index = next(index for index, row in enumerate(prepared.snapshot.fingerprints) if row.path == "blocked.py")
+        self.assertNotIn(f"F{index + 1:04}", catalogue.files)
+        with self.assertRaises(ValueError):
+            discovery._parse_files(json.dumps({"files": [f"F{index + 1:04}"]}), catalogue)
+        for fingerprint in prepared.snapshot.fingerprints:
+            self.assertIn("FILE " + fingerprint.path, catalogue.context)
+        self.assertIn("syntax_or_version", catalogue.context)
+        paths = ("types.pyi", "app.py")
+        fids = tuple(next(fid for fid, path in catalogue.files.items() if path == name) for name in paths)
+        allowed = [cid for cid, row in catalogue.candidates.items() if row["path"] in paths]
+        context = discovery._definition_context(catalogue, fids)
+        for cid in allowed:
+            row = catalogue.candidates[cid]
+            self.assertIn(f"{cid} L{row['start_line']}-{row['end_line']} {row['name']}", context)
+        backend = ScriptedBackend([json.dumps({"files": fids}), json.dumps({"candidates": allowed})])
+        outcome = discovery.run_discovery(prepared, catalogue, backend, model="test-model",
+            reader="qwen35", acceptance_gate=passing_gate)
+        self.assertTrue(outcome.ok, outcome.failure_reason)
+        self.assertEqual(len(backend.requests), 2)
+        self.assertEqual(backend.requests[1].messages[1].content, context)
+        self.assertEqual(outcome.scope["total_functions"], 126)
+        self.assertEqual(outcome.scope["selected_functions"], len(allowed))
+        self.assertEqual(outcome.as_dict()["unindexed"], [dict(row) for row in catalogue.unindexed])
+
+    def test_unindexed_coverage_tampering_fails_before_inference(self):
+        (self.source / "blocked.py").write_text("def broken(\n", encoding="utf-8")
+        for target in ("memory", "disk"):
+            with self.subTest(target=target):
+                prepared = self.prepare()
+                catalogue = discovery.prepare_discovery(prepared)
+                if target == "memory":
+                    catalogue = replace(catalogue, unindexed=())
+                else:
+                    document = json.loads(catalogue.input_bytes())
+                    document["unindexed"][0]["reason"] = "parse_depth"
+                    self.assertEqual(catalogue.unindexed[0]["reason"], "syntax_or_version")
+                    (prepared.run_root / "discovery-input.json").write_text(json.dumps(document), encoding="utf-8")
+                backend, gate = ScriptedBackend([]), Mock(side_effect=passing_gate)
+                outcome = discovery.run_discovery(prepared, catalogue, backend, model="test-model",
+                    reader="qwen35", acceptance_gate=gate)
+                self.assertEqual(backend.requests, [])
+                self.assertFalse(outcome.ok)
+                self.assertEqual(outcome.status, "artifact_drift")
+                self.assertEqual(outcome.candidates, ())
+                self.assertNotIn("unindexed", outcome.as_dict())
+                self.assertNotIn("scope", outcome.as_dict())
+                gate.assert_called_once()
+
+    def test_unindexed_source_and_snapshot_drift_still_block_discovery(self):
+        for when in ("before", "during"):
+            for target in ("source", "snapshot"):
+                with self.subTest(when=when, target=target):
+                    (self.source / "blocked.py").write_text("def broken(\n", encoding="utf-8")
+                    prepared = self.prepare()
+                    catalogue = discovery.prepare_discovery(prepared)
+                    path = (self.source if target == "source" else Path(prepared.snapshot.snapshot_root)) / "blocked.py"
+                    mutations = []
+
+                    def mutate(_request=None):
+                        path.write_text("def changed(\n", encoding="utf-8")
+                        mutations.append(target)
+                        return '{"candidates":["D0001"]}'
+
+                    if when == "before":
+                        mutate()
+                    backend = ScriptedBackend([mutate])
+                    outcome = discovery.run_discovery(prepared, catalogue, backend, model="test-model",
+                        reader="qwen35", acceptance_gate=passing_gate)
+                    self.assertEqual(mutations, [target])
+                    self.assertEqual(len(backend.requests), 0 if when == "before" else 1)
+                    self.assertFalse(outcome.ok)
+                    self.assertEqual(outcome.status, target + "_drift")
+                    self.assertEqual(outcome.candidates, ())
+                    self.assertNotIn("unindexed", outcome.as_dict())
+                    self.assertNotIn("unindexed", json.loads((prepared.run_root / "discovery.json").read_text(encoding="utf-8")))
+
+    def test_failed_partial_discovery_suppresses_coverage_with_candidates(self):
+        (self.source / "blocked.py").write_text("def broken(\n", encoding="utf-8")
+        for failure in ("response", "cleanup", "cancel"):
+            with self.subTest(failure=failure):
+                prepared = self.prepare()
+                catalogue = discovery.prepare_discovery(prepared)
+                backend = ScriptedBackend(['{"candidates":["D9999"]}' if failure == "response"
+                    else '{"candidates":["D0001"]}'])
+                backend.cancel_event = threading.Event()
+
+                def cleanup():
+                    passed = passing_gate()
+                    if failure == "cancel":
+                        backend.cancel_event.set()
+                    return AcceptanceGateResult(False, "synthetic failed cleanup", passed.evidence) if failure == "cleanup" else passed
+
+                gate = Mock(side_effect=cleanup)
+                outcome = discovery.run_discovery(prepared, catalogue, backend, model="test-model",
+                    reader="qwen35", acceptance_gate=gate)
+                self.assertEqual(len(backend.requests), 1)
+                self.assertFalse(outcome.ok)
+                self.assertEqual(outcome.candidates, ())
+                for document in (outcome.as_dict(), json.loads((prepared.run_root / "discovery.json").read_text(encoding="utf-8"))):
+                    self.assertNotIn("unindexed", document)
+                    self.assertNotIn("scope", document)
+                gate.assert_called_once()
 
     def test_single_file_over_function_budget_stops_after_file_selection_without_clipping(self):
         (self.source / "app.py").write_text("\n".join(
@@ -679,6 +859,8 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertNotIn("stages", outcome.inference)
                 self.assertIsNone(catalogue.files)
                 self.assertEqual(catalogue.readmes, ())
+                self.assertEqual(catalogue.unindexed, ())
+                self.assertNotIn("unindexed", outcome.as_dict())
                 self.assertNotIn("files", json.loads(catalogue.input_bytes()))
                 self.assertNotIn("readmes", json.loads(catalogue.input_bytes()))
                 self.assertEqual(catalogue.context, "COMPLETE ADMITTED FILE / PYTHON FUNCTION CATALOGUE\n"

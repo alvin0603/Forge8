@@ -1184,6 +1184,9 @@ def _emit_explain_human(result: dict[str, Any]) -> None:
         discovery = project["discovery"]
         lines.extend(("", "Project question: model-located candidates; relevance and completeness are NOT verified.",
             f"  Discovery evidence: {_inert_text(discovery['run_root'])}"))
+        if discovery.get("unindexed"):
+            lines.append("  Incomplete Python index; these files were retained but their definitions were not selectable:")
+            lines.extend(f"    {_inert_text(row['path'])}: {_inert_text(row['reason'])}" for row in discovery["unindexed"])
         if project["answer_attempted"]:
             lines.append("  Automatically planned source ranges (actual reads are recorded in answer coverage):")
             for row in project["focus"]:
@@ -1277,13 +1280,17 @@ def _emit_locate_human(result: dict[str, Any]) -> None:
         lines.extend((
             f"Snapshot: {_inert_text(outcome.get('snapshot_sha256'))}",
             "Discovery limit: at most 6 candidates from the selected files; 12,000 user-context characters per request."
-            if scope else "Discovery limit: at most 6 candidates from a complete small Python catalogue; 12,000 user-context characters.",
+            if scope else "Discovery limit: at most 6 candidates from available Python definitions; 12,000 user-context characters."
+            if outcome.get("unindexed") else "Discovery limit: at most 6 candidates from a complete small Python catalogue; 12,000 user-context characters.",
             "Scope: file inventory, Python definition names and a bounded README excerpt; not function bodies or a resolved call graph.",
             "Review candidates, then select up to 3 ranges of at most 80 lines for explain/read. Character limits also apply; nothing was automatically added or answered.",
         ))
     else:
         reason = result.get("error") or outcome.get("failure_reason") or result["status"]
         lines.extend(f"  {_inert_text(line)}" for line in str(reason).split("\n"))
+    if outcome.get("unindexed"):
+        lines.append("Incomplete Python index; these files were retained but their definitions were not selectable:")
+        lines.extend(f"  {_inert_text(row['path'])}: {_inert_text(row['reason'])}" for row in outcome["unindexed"])
     if scope:
         lines.extend((
             f"Selected-file scope: {len(scope['files'])}/{scope['total_files']} files; "
@@ -1495,6 +1502,8 @@ def _run_reading_cli(
         if locating:
             progress("building a complete bounded Python definition catalogue")
             catalogue = prepare_discovery(prepared)
+            if catalogue.unindexed:
+                progress(f"Python index incomplete: {len(catalogue.unindexed)} files have no selectable definitions; their paths and reasons remain in the catalogue.")
             if catalogue.files is not None:
                 progress("Large catalogue: at most 2 requests; choose up to 3 files, then definitions only within those files; relevant files may be missed.")
         check_cancel()

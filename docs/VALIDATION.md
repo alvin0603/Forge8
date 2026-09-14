@@ -141,6 +141,24 @@ Windows setup passed 21 assertions without downloads or native launches.
 This is bounded inspection of guest-reported values, not a new tracing algorithm
 or evidence of improved model reasoning. No model was called in these journeys.
 
+## Partially indexed projects
+
+September 14 checks reproduced a project-wide discovery refusal caused by one
+unparseable Python file. After the fix, healthy definitions remained selectable
+and unavailable files were explicitly listed. A Python 3.12 type-alias fixture
+also became usable on Windows Python 3.10. All previously successful catalogue
+inputs remained byte-identical across 14 development cases on each platform.
+
+Real Edge journeys against Windows and WSL each completed Locate and a project
+question, with correct answers and source references for a small string helper.
+They checked unindexed-file navigation, preserved drafts/selections, and
+390/1440-pixel layouts. Each made three model requests without executing source.
+One private checker incorrectly expected two request records; its failed record
+was retained and all three were independently verified, without replaying answers.
+Both model owners closed successfully. The local 1,460-test Python suite, seven
+Node harnesses per platform, and 21 Windows setup assertions passed.
+This removes an availability failure; it does not establish better model reasoning.
+
 ## Model quality and waiting time
 
 The public desk reader is Qwen3.5-9B Q4_K_M with llama.cpp b10621, an 8K context

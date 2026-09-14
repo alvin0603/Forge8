@@ -120,6 +120,7 @@ class SourceCatalogue:
     catalogue_sha256: str
     files: Mapping[str, str] | None = None
     readmes: tuple[str, ...] = ()
+    unindexed: tuple[Mapping[str, object], ...] = ()
 
     @property
     def system(self) -> str:
@@ -131,6 +132,8 @@ class SourceCatalogue:
             "context": self.context, "candidates": {key: dict(row) for key, row in self.candidates.items()}}
         if self.files is not None:
             value.update(files=dict(self.files), readmes=list(self.readmes))
+        if self.unindexed:
+            value["unindexed"] = [dict(row) for row in self.unindexed]
         return _canonical_json(value)
 
 
@@ -153,6 +156,7 @@ class DiscoveryOutcome:
     reader: str
     scope: dict | None = None
     request_completion: dict | None = None
+    unindexed: tuple[dict, ...] = ()
 
     def as_dict(self) -> dict:
         result = asdict(self)
@@ -161,6 +165,10 @@ class DiscoveryOutcome:
             result.pop("scope")
         if self.request_completion is None:
             result.pop("request_completion")
+        if self.unindexed:
+            result["unindexed"] = list(result["unindexed"])
+        else:
+            result.pop("unindexed")
         return result
 
 
@@ -199,7 +207,7 @@ def prepare_discovery(prepared: PreparedExplanation) -> SourceCatalogue:
     _validate_prewrite_shape(root)
     if not all(ok for ok, _ in _integrity(prepared)):
         raise ExplanationError("discovery source, snapshot or ingress changed before catalogue preparation")
-    rows, candidates, readmes, file_rows, files = [], {}, [], [], {}
+    rows, candidates, readmes, file_rows, files, unindexed = [], {}, [], [], {}, []
     for index, fingerprint in enumerate(prepared.snapshot.fingerprints):
         path = root / "input" / "source" / Path(*fingerprint.path.split("/"))
         _require_run_entry(path, directory=False, label="catalogue source")
@@ -211,16 +219,21 @@ def prepare_discovery(prepared: PreparedExplanation) -> SourceCatalogue:
         text, name = data.decode("utf-8"), fingerprint.path
         rows.append("FILE " + name)
         previous_count = len(candidates)
+        index_note = None
         if name.lower().endswith((".py", ".pyi")):
             outline = _python_outline(name, text)
             if outline["status"] != "available":
-                raise ExplanationError("Full definition catalogue unavailable for " + name + "; use file browsing or literal search")
-            for item in outline["items"]:
-                if item["kind"] == "class":
-                    continue
-                cid = f"D{len(candidates) + 1:04}"
-                candidates[cid] = MappingProxyType({"file": str(index), "path": name, **item})
-                rows.append(f"  {cid} L{item['start_line']}-{item['end_line']} {item['name']}" + (" [stub]" if item["stub"] else ""))
+                unindexed.append(MappingProxyType({"file": str(index), "path": name,
+                    "status": outline["status"], "reason": outline["reason"]}))
+                index_note = f"Python definition index {outline['status']}: {outline['reason']}; not selectable"
+                rows.append("  [" + index_note + "]")
+            else:
+                for item in outline["items"]:
+                    if item["kind"] == "class":
+                        continue
+                    cid = f"D{len(candidates) + 1:04}"
+                    candidates[cid] = MappingProxyType({"file": str(index), "path": name, **item})
+                    rows.append(f"  {cid} L{item['start_line']}-{item['end_line']} {item['name']}" + (" [stub]" if item["stub"] else ""))
         else:
             rows.append("  [path only; no Python definition index]")
         count = len(candidates) - previous_count
@@ -229,11 +242,13 @@ def prepare_discovery(prepared: PreparedExplanation) -> SourceCatalogue:
             files[fid] = name
             file_rows.append(f"{fid} FILE {name} [{count} Python function definitions]")
         else:
-            file_rows.append(f"FILE {name} [path only; no selectable Python function definitions]")
+            file_rows.append(f"FILE {name} [" + (index_note or "path only; no selectable Python function definitions") + "]")
         if "/" not in name and name.split(".")[0].casefold() == "readme":
             text = "\n".join("".join(c if c == "\t" or c.isprintable() else f"\\u{ord(c):04x}" for c in line) for line in text.splitlines())
             readmes.append(f"README {name} [first {min(len(text), 1500)}/{len(text)} chars; navigation only]\n" + text[:1500])
-    context = "COMPLETE ADMITTED FILE / PYTHON FUNCTION CATALOGUE\n" + "\n".join(rows)
+    heading = ("COMPLETE ADMITTED FILE MAP / AVAILABLE PYTHON FUNCTION CATALOGUE\n" if unindexed
+        else "COMPLETE ADMITTED FILE / PYTHON FUNCTION CATALOGUE\n")
+    context = heading + "\n".join(rows)
     context += "\n\n" + "\n\n".join(readmes) + "\n\nUSER QUESTION\n" + prepared.question
     if not candidates:
         raise ExplanationError("No Python function definitions are available; use file browsing or literal search")
@@ -244,10 +259,10 @@ def prepare_discovery(prepared: PreparedExplanation) -> SourceCatalogue:
         if len(context) > 12000:
             raise ExplanationError(f"Complete file-map context exceeds 12000 chars: {len(context)}; use browsing or literal search, no model call")
     catalogue = SourceCatalogue(context, MappingProxyType(candidates), prepared.question, prepared.snapshot_sha256, "",
-        MappingProxyType(files) if large else None, tuple(readmes) if large else ())
+        MappingProxyType(files) if large else None, tuple(readmes) if large else (), tuple(unindexed))
     body = catalogue.input_bytes()
     catalogue = SourceCatalogue(context, catalogue.candidates, catalogue.question,
-        catalogue.snapshot_sha256, hashlib.sha256(body).hexdigest(), catalogue.files, catalogue.readmes)
+        catalogue.snapshot_sha256, hashlib.sha256(body).hexdigest(), catalogue.files, catalogue.readmes, catalogue.unindexed)
     _write_exclusive(root / "discovery-input.json", body)
     return catalogue
 
@@ -543,7 +558,7 @@ def _plan_candidate_focus(prepared: PreparedExplanation, catalogue: SourceCatalo
 def run_discovery(prepared: PreparedExplanation, catalogue: SourceCatalogue, backend: ChatBackend,
         *, model: str, reader: str, acceptance_gate: AcceptanceGate,
         progress: ProgressCallback | None = None, resident_session_id: str | None = None) -> DiscoveryOutcome:
-    """At most two nonstream requests, with complete indices and final identity gates."""
+    """At most two nonstream requests; disclose unavailable indices and gate identity."""
     root, selected, scope = None, (), None
     inference = {"calls": 0, "usage": {}, "timings": {}}
     large = catalogue.files is not None
@@ -689,7 +704,8 @@ def run_discovery(prepared: PreparedExplanation, catalogue: SourceCatalogue, bac
     outcome = DiscoveryOutcome(status == "located", status, prepared.question, str(prepared.run_root),
         prepared.snapshot_sha256, catalogue.catalogue_sha256, selected if status == "located" else (),
         inference, acceptance, *(ok for ok, _ in integrity), failure, model, reader,
-        scope if status == "located" else None, completion)
+        scope if status == "located" else None, completion,
+        tuple(dict(row) for row in catalogue.unindexed) if status == "located" else ())
     if root is not None:
         payload = outcome.as_dict()
         if resident_session_id:

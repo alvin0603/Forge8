@@ -811,6 +811,91 @@ async function checkDiscovery(context, nodes) {
   assert.equal(nodes.question.value,question); assert.equal(run("JSON.stringify(state.focus)"),beforeCancelFocus);
   assert.equal(nodes.locate.disabled,false); assert.equal(nodes["question-editor"].open,true);
 }
+async function checkDiscoveryCoverage(context, nodes) {
+  const run = code => vm.runInContext(code, context), requests = [], previousFetch = context.fetch;
+  const files = [{id:"0",path:"entry.py",lines:8},{id:"1",path:"types.PYI",lines:3},
+    {id:"2",path:"fixtures/broken.py",lines:2},{id:"3",path:"README.md",lines:1}];
+  const rows = [{file:"1",path:"types.PYI",status:"unavailable",reason:"syntax_or_version"},
+    {file:"2",path:"fixtures/broken.py",status:"limited",reason:"item_limit"}];
+  const candidate = {file:"0",path:"entry.py",name:"entry",kind:"function",start_line:1,end_line:2};
+  const fixture = (id, kind, scoped = false) => {
+    const discovery = {ok:true,status:"located",snapshot_sha256:"coverage-v1",source_unchanged:true,
+      snapshot_unchanged:true,ingress_unchanged:true,acceptance:{ok:true},candidates:[candidate],unindexed:rows.map(row=>({...row}))};
+    if (scoped) discovery.scope={mode:"files_then_definitions",files:["entry.py"],total_files:4,total_functions:5,selected_functions:1};
+    const job={id,kind,status:kind==="locate"?"located":"answered",version:"coverage-v1",files,question:"Original question",gpu:"released"};
+    job.result=kind==="locate"?{kind:"forge8.locate",ok:true,status:"located",outcome:discovery}:
+      {kind:"forge8.explain",ok:true,status:"answered",project_reading:{discovery,answer_attempted:true,
+        focus:[{path:"entry.py",start_line:1,end_line:2}]},outcome:{ok:true,status:"answered",source_unchanged:true,
+        snapshot_unchanged:true,acceptance:{ok:true},coverage:{observed:{ranges:[{path:"entry.py",ranges:[{start_line:1,end_line:2}]}]}},
+        answer:{claims:[{text:"COVERAGE_PROJECT_ANSWER",citations:[]}]}}};
+    return job;
+  };
+  const metadata = job => job.kind === "locate" ? job.result.outcome : job.result.project_reading.discovery;
+  const emit = job => { context.coverageJob=job; run("renderJob(coverageJob)"); };
+  const warning = () => nodes.answer.children.find(node=>node.className==="discovery-index-warning");
+  context.coverageProject={name:"mixed syntax",version:"coverage-v1",reader:"qwen35",files,excluded:[]};
+  context.fetch=async (route, options) => {
+    assert.equal(options.method,"GET"); assert(route.startsWith("/api/source?")); requests.push(route);
+    const query=new URLSearchParams(route.split("?")[1]), file=files.find(file=>file.id===query.get("file"));
+    assert.equal(query.get("version"),"coverage-v1");
+    return {ok:true,json:async()=>({path:file.path,version:"coverage-v1",lines:Array.from({length:file.lines},()=>"source"),
+      outline:{status:"unavailable",reason:"syntax_or_version",items:[]}})};
+  };
+  try {
+    run("showProject(coverageProject)"); nodes.question.value="KEEP MY DRAFT";
+    run('state.focus=[{file:"0",path:"entry.py",start:1,end:2}];renderSelections()');
+    const manual=run("JSON.stringify(state.focus)");
+    for (const kind of ["locate","project"]) for (const scoped of [false,true]) {
+      const job=fixture(`${kind}-${scoped}`,kind,scoped); emit(job);
+      const box=warning(); assert(box); assert.equal(box.parentElement,nodes.answer);
+      assert.equal(box.closest("details"),null,"incomplete-index warning must remain visible outside collapsed scope");
+      assert(box.children[0].textContent.includes("2 個檔案未建立索引"));
+      for (const row of rows) { assert(box.textContent.includes(row.path)); assert(box.textContent.includes(row.reason)); }
+      if (kind==="project") {
+        assert(nodes.answer.textContent.includes("COVERAGE_PROJECT_ANSWER"));
+        const scope=nodes.answer.querySelectorAll("details").find(node=>node.className==="project-reading-scope");
+        assert.equal(scope.open,false); assert(nodes.answer.children.indexOf(box)<nodes.answer.children.indexOf(scope));
+      }
+      const link=box.querySelectorAll("button")[0], before=requests.length;
+      for (const flag of ["pending","refreshing"]) {
+        run(`state.${flag}=true;controls()`); assert.equal(link.disabled,true); await link.listeners.click();
+        assert.equal(requests.length,before); run(`state.${flag}=false;controls()`);
+      }
+      await link.listeners.click(); assert.equal(requests.length,before+1); assert.equal(run("state.source.path"),rows[0].path);
+      assert.equal(run("state.anchor"),null); assert.equal(run("state.end"),null);
+      assert.equal(run("JSON.stringify(state.focus)"),manual); assert.equal(nodes.question.value,"KEEP MY DRAFT");
+      emit({...job,status:"unknown"}); await link.listeners.click(); assert.equal(requests.length,before+1);
+      const allIndexed=fixture(`${kind}-${scoped}-complete`,kind,scoped); delete metadata(allIndexed).unindexed; emit(allIndexed);
+      assert.equal(warning(),undefined,"old all-indexed outcomes must not gain a warning or additional source action");
+      assert.equal(nodes.answer.querySelectorAll("button").length,1);
+    }
+    const fallback=fixture("coverage-selection-only","project"); fallback.status="incomplete";
+    Object.assign(fallback.result,{ok:false,status:"selection_required",outcome:null});
+    Object.assign(fallback.result.project_reading,{answer_attempted:false,focus:[]}); emit(fallback);
+    assert(warning()); assert.equal(nodes.answer.querySelectorAll("details").find(node=>node.className==="project-reading-scope").open,true);
+    for (const [status,reasons] of Object.entries({unavailable:["line_separators","parse_depth","syntax_or_version"],
+        limited:["source_limit","node_limit","item_limit","metadata_limit"]})) for (const reason of reasons) {
+      const job=fixture(`reason-${reason}`,"locate"); metadata(job).unindexed=[{...rows[0],status,reason}]; emit(job); assert(warning());
+    }
+    const invalid=[null,undefined,[],{},Array.from({length:1001},()=>({...rows[0]})),[rows[0],rows[0]],
+      [null],[{...rows[0],file:1}],[{...rows[0],file:"2"}],[{...rows[0],path:"<img src=x>.py"}],
+      [{...rows[0],status:"available"}],[{...rows[0],reason:"item_limit"}],[{...rows[0],reason:"__proto__"}],
+      [{...rows[0],extra:true}],[{...rows[0],file:"3",path:"README.md"}],
+      [{...rows[0],file:"0",path:"entry.py"}]];
+    for (const kind of ["locate","project"]) for (const [index,bad] of invalid.entries()) {
+      const job=fixture(`${kind}-bad-${index}`,kind); metadata(job).unindexed=bad; emit(job);
+      assert.equal(warning(),undefined); assert.equal(nodes.answer.querySelectorAll("button").length,0);
+      assert(!nodes.answer.textContent.includes("COVERAGE_PROJECT_ANSWER")); assert.equal(nodes.answer.querySelectorAll("img").length,0);
+    }
+    const selected=fixture("selected-unindexed","locate",true); metadata(selected).scope.files.push("types.PYI"); emit(selected);
+    assert.equal(nodes.answer.querySelectorAll("button").length,0,"unindexed files cannot also be selected by discovery");
+    const held=fixture("held-coverage","locate"); emit(held); const link=warning().querySelectorAll("button")[0], before=requests.length;
+    const changed=fixture(held.id,"locate"); metadata(changed).unindexed=[rows[1]]; emit(changed);
+    await link.listeners.click(); assert.equal(requests.length,before,"same job ID cannot revive a removed coverage row");
+    emit(held); const stale=warning().querySelectorAll("button")[0];
+    run('showProject({...coverageProject,version:"coverage-v2"})'); await stale.listeners.click(); assert.equal(requests.length,before);
+  } finally { context.fetch=previousFetch; }
+}
 async function checkProjectQuestion(context, nodes) {
   const run = code => vm.runInContext(code, context), sent = [], requests = [];
   const files = [{id:"0",path:"entry.py",lines:250},{id:"1",path:"helper.py",lines:250}];
@@ -3692,6 +3777,7 @@ async function checkScenario(mode) {
   await checkObservedPaths(context, nodes);
   await checkReadingTrail(context, nodes);
   await checkDiscovery(context, nodes);
+  await checkDiscoveryCoverage(context, nodes);
   await checkProjectQuestion(context, nodes);
   await checkUnverifiedProse(context, nodes);
   checkPackedSelections(context, nodes);

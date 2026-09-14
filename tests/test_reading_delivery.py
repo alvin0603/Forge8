@@ -5,8 +5,9 @@ The owned source contains a top-level exception and is never imported or execute
 """
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import hashlib
+import io
 import json
 from pathlib import Path
 import threading
@@ -249,6 +250,43 @@ class ReadingDeliveryTests(unittest.TestCase):
         self.assertIsNone(run.transports[0].on_text)
         self.assertNotEqual(run.requests[0].response_format, explain._STRUCTURED_READING_FORMAT)
         self.assertNotIn("     4|    return 7", run.requests[0].messages[1].content)
+
+    def test_partial_index_survives_project_delivery_and_human_output(self):
+        (self.source / "broken.py").write_text("def unfinished(\n", encoding="utf-8")
+        expected = [{"file": "1", "path": "broken.py", "status": "unavailable", "reason": "syntax_or_version"}]
+        for resident in (False, True):
+            with self.subTest(resident=resident):
+                run = self.run_delivery(kind="project", resident=resident)
+                self.assertEqual(run.code, 0, run.result)
+                self.assertEqual(len(run.requests), 2)
+                self.assert_safe_result(run, accepted=True)
+                discovery = run.result["project_reading"]["discovery"]
+                self.assertEqual(discovery["unindexed"], expected)
+                self.assertIn("FILE broken.py", run.requests[0].messages[1].content)
+                self.assertIn("syntax_or_version", run.requests[0].messages[1].content)
+                self.assertNotIn("broken.py", run.requests[1].messages[1].content)
+                self.assert_qwen_request(run.requests[1], run.question, resident=resident)
+                self.assertTrue(any("Python index incomplete" in message for message in run.phases))
+                saved = json.loads((Path(discovery["run_root"]) / "discovery.json").read_bytes())
+                self.assertEqual(saved["unindexed"], expected)
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    cli._emit_explain_human(run.result)
+                self.assertIn("Incomplete Python index", output.getvalue())
+                self.assertIn("broken.py: syntax_or_version", output.getvalue())
+                self.assertEqual((self.source / "broken.py").read_text(encoding="utf-8"), "def unfinished(\n")
+
+    def test_partial_locate_human_output_does_not_claim_complete_catalogue(self):
+        (self.source / "broken.py").write_text("def unfinished(\n", encoding="utf-8")
+        run = self.run_delivery('{"candidates":["D0001"]}', kind="locate", resident=True)
+        self.assertEqual(run.code, 0, run.result)
+        self.assertEqual(len(run.requests), 1)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            cli._emit_locate_human(run.result)
+        self.assertIn("available Python definitions", output.getvalue())
+        self.assertIn("broken.py: syntax_or_version", output.getvalue())
+        self.assertNotIn("complete small Python catalogue", output.getvalue())
 
     def test_gemma_readers_keep_existing_prose_and_action_routes(self):
         prose = "It returns 7. [E1:L3-L4]"

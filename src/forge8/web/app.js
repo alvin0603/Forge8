@@ -2374,7 +2374,45 @@ function validDiscovery(outcome, version) {
       (scope.files.length === 0 && scope.selected_functions !== 0) || candidates.some(item => !scope.files.includes(item.path)))) {
     return false;
   }
+  if (Object.hasOwn(outcome, "unindexed")) {
+    const rows = outcome.unindexed, reasons = {
+      unavailable: ["line_separators", "parse_depth", "syntax_or_version"],
+      limited: ["source_limit", "node_limit", "item_limit", "metadata_limit"]};
+    if (!Array.isArray(rows) || !rows.length || rows.length > Math.min(1000, state.project.files.length) ||
+        rows.some(row => !row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).length !== 4 ||
+          !["file", "path", "status", "reason"].every(key => Object.hasOwn(row, key) && typeof row[key] === "string") ||
+          !/\.pyi?$/i.test(row.path) || !Object.hasOwn(reasons, row.status) || !reasons[row.status].includes(row.reason) ||
+          !state.project.files.some(file => file.id === row.file && file.path === row.path) ||
+          candidates.some(item => item.path === row.path) || scope?.files.includes(row.path)) ||
+        new Set(rows.map(row => row.file)).size !== rows.length || new Set(rows.map(row => row.path)).size !== rows.length) return false;
+  }
   return true;
+}
+function appendDiscoveryCoverage(outcome, job) {
+  if (!outcome.unindexed) return;
+  const rows = outcome.unindexed, box = element("section", "", "discovery-index-warning");
+  box.append(element("p", `Python 函式目錄不完整：${rows.length} 個檔案未建立索引，定位不會挑選其中的函式，相關實作可能被漏掉。`, "answer-prose"));
+  const detail = element("details"), list = element("ul", "", "discovery-scope");
+  detail.append(element("summary", `查看未索引檔案（${rows.length}）`),
+    element("p", "檔案仍保留在唯讀快照；點開可自行閱讀，不會加入選段或重新提問。", "muted"));
+  const reasons = {line_separators: "換行格式無法對應行號", parse_depth: "語法結構過深", syntax_or_version: "語法或 Python 版本無法解析",
+    source_limit: "原碼大小超過上限", node_limit: "語法節點超過上限", item_limit: "定義數量超過上限", metadata_limit: "索引資料超過上限"};
+  for (const row of rows) {
+    const item = element("li"), file = state.project.files.find(file => file.id === row.file && file.path === row.path);
+    const button = element("button", `${row.path} · ${reasons[row.reason]}（${row.reason}）`, "definition-button");
+    button.type = "button"; button.dataset.discovery = "true";
+    button.addEventListener("click", () => {
+      const current = answerJob();
+      if (state.pending || state.refreshing || current?.id !== job.id || state.project?.version !== job.version) return;
+      const live = current.kind === "project" ? projectReading(current)?.discovery :
+        current.status === "located" && readingResultKind(current, "forge8.locate") && requestFinished(current) ? current.result?.outcome : null;
+      if (!validDiscovery(live, job.version) || !live.unindexed?.some(item =>
+          ["file", "path", "status", "reason"].every(key => item[key] === row[key]))) return;
+      return openFile(file, job.version);
+    });
+    item.append(button); list.append(item);
+  }
+  detail.append(list); box.append(detail); $("answer").append(box);
 }
 function appendDiscoveryCandidates(candidates, job, parent = $("answer")) {
   const version = job.version;
@@ -2402,6 +2440,7 @@ function renderDiscovery(job) {
   if (candidates.length) $("question-editor").open = false;
   $("answer").append(element("h3", "AI 建議閱讀位置 · 尚未解釋程式"),
     element("p", "模型只看目錄與 README 節錄，沒有讀取函式實作。候選可能有遺漏或不相關，也不代表實際呼叫關係。點開核對，再自行加入選段。", "muted"));
+  appendDiscoveryCoverage(outcome, job);
   if (scope) {
     $("answer").append(element("p", `兩階段定位 · 先從 ${scope.total_files} 個檔案挑選，再檢視所選檔案的完整函式目錄（${scope.selected_functions} / ${scope.total_functions} 個）。未選中的檔案仍可能有相關實作。`, "muted"));
     const list = element("ul", "", "discovery-scope");
@@ -2453,6 +2492,7 @@ function projectReading(job) {
 }
 function renderProjectScope(job, meta) {
   const box = element("details", "", "project-reading-scope"), {discovery, focus, answer_attempted: attempted} = meta;
+  appendDiscoveryCoverage(discovery, job);
   const added = meta.context?.added || [], skipped = Object.entries(meta.context?.skipped || {});
   const appendRange = (span, supplemental = false) => {
     const file = state.project.files.find(file => file.path === span.path), button = element("button", `${span.path} · L${span.start_line}–L${span.end_line}`, "definition-button retained-source");

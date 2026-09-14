@@ -186,7 +186,7 @@ class ReadingDeskTests(DeskFixture):
 
     def test_locate_preflight_rejects_live_drift_and_unsupported_catalogue_before_server(self):
         for content, expected in (("def read(): return 8\n", "source changed since browsing"),
-                ("def unfinished(\n", "catalogue unavailable")):
+                ("def unfinished(\n", "No Python function definitions are available")):
             with self.subTest(content=content):
                 (self.source / "main.py").write_text(content, encoding="utf-8")
                 if "unfinished" in content:
