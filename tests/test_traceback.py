@@ -166,13 +166,17 @@ class TracebackHTTPTests(DeskFixture):
         payload = {"text": HEADER + '  File "main.py", line 2\nValueError: example',
             "version": self.desk.project["version"]}
 
-        def request(*, method="POST", auth=True, origin=True, body=payload):
+        def request(*, method="POST", auth=True, origin=True, body=payload, headers_only=False):
             headers = {"Content-Type": "application/json"}
             if auth: headers["Authorization"] = "Bearer " + token
             if origin: headers["Origin"] = f"http://127.0.0.1:{server.server_port}"
+            raw = json.dumps(body).encode() if method == "POST" else None
+            if headers_only:
+                headers["Content-Length"] = str(len(raw))
+                raw = None
             connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
             try:
-                connection.request(method, "/api/traceback", json.dumps(body), headers)
+                connection.request(method, "/api/traceback", raw, headers)
                 response = connection.getresponse()
                 return response.status, dict(response.getheaders()), json.loads(response.read())
             finally:
@@ -180,8 +184,8 @@ class TracebackHTTPTests(DeskFixture):
 
         try:
             with patch.object(desk_module, "_run_explain_cli") as model:
-                self.assertEqual(request(auth=False)[0], 401)
-                self.assertEqual(request(origin=False)[0], 403)
+                self.assertEqual(request(auth=False, headers_only=True)[0], 401)
+                self.assertEqual(request(origin=False, headers_only=True)[0], 403)
                 self.assertEqual(request(method="GET")[0], 404)
                 self.assertEqual(request(body={**payload, "version": "stale"})[0], 400)
                 self.assertEqual(request(body={**payload, "focus": []})[0], 400)

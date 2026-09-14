@@ -192,27 +192,14 @@ class DeskExperimentCallInputHTTPTests(_CallInputFixture):
         self.thread.start()
         self.addCleanup(self.close_server)
 
-    def raw_request(self, body):
+    def raw_request(self, body, *, headers_only=False):
+        raw = body.encode("utf-8")
+        fields = {"Authorization": "Bearer " + self.token, "Origin": self.origin, "Content-Type": "application/json"}
+        if headers_only:
+            fields["Content-Length"] = str(len(raw))
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
-            connection.request("POST", "/api/experiment/input", body.encode("utf-8"), {
-                "Authorization": "Bearer " + self.token, "Origin": self.origin, "Content-Type": "application/json"})
-            response = connection.getresponse()
-            return response.status, response.read()
-        finally:
-            connection.close()
-
-    def rejected_header_request(self, payload, headers, auth):
-        # Auth must reject before reading a body. Sending it after the headers
-        # races HTTP/1.0 early close on Windows; no transport failure is accepted.
-        fields = {"Origin": self.origin, "Content-Type": "application/json",
-            "Content-Length": str(len(json.dumps(payload).encode("utf-8")))}
-        if auth:
-            fields["Authorization"] = "Bearer " + self.token
-        fields.update(headers)
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
-        try:
-            connection.request("POST", "/api/experiment/input", body=None, headers=fields)
+            connection.request("POST", "/api/experiment/input", None if headers_only else raw, fields)
             response = connection.getresponse()
             return response.status, response.read()
         finally:
@@ -226,7 +213,8 @@ class DeskExperimentCallInputHTTPTests(_CallInputFixture):
                     ({"Host": "evil.invalid"}, True, 403, "invalid local host"),
                     ({"Origin": "https://evil.invalid"}, True, 403, "invalid local origin")):
                 with self.subTest(headers=headers, auth=auth):
-                    status, body = self.rejected_header_request(payload, headers, auth)
+                    status, _, body = self.request("/api/experiment/input", method="POST", payload=payload,
+                        headers=headers, auth=auth, headers_only=True)
                     self.assertEqual(status, expected)
                     self.assertEqual(json.loads(body), {"error": message})
                     self.assertNotIn(b"9007199254740993", body)
@@ -239,10 +227,10 @@ class DeskExperimentCallInputHTTPTests(_CallInputFixture):
         self.assertIn("9007199254740993", result["input_text"])
         self.assertEqual(result["source_sha256"], hashlib.sha256(self.code).hexdigest())
         with patch.object(self.desk, "prepare_experiment_input") as dispatch:
-            for raw in ('{"entry":"entry","entry":"different"}', '{"start":NaN}',
-                        '{"start":Infinity}', " " * 16_385):
+            for raw in ('{"entry":"entry","entry":"different"}', '{"start":NaN}', '{"start":Infinity}'):
                 with self.subTest(raw=raw[:60]):
                     self.assertEqual(self.raw_request(raw)[0], 400)
+            self.assertEqual(self.raw_request(" " * 16_385, headers_only=True)[0], 400)
             dispatch.assert_not_called()
         self.assertEqual(self.request("/api/experiment/input", method="POST", payload={**payload, "start": 1e999})[0], 400)
         self.assertEqual(self.request("/api/experiment/input", method="POST", payload={**payload, "version": "stale"})[0], 400)

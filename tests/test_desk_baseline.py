@@ -413,7 +413,8 @@ class DeskBaselineTests(fixtures.DeskFixture):
         server_thread.start()
         try:
             original = self.command()
-            status, _, _ = self.request("/api/experiment/baseline", method="POST", payload=original, auth=False)
+            status, _, _ = self.request("/api/experiment/baseline", method="POST",
+                payload=original, auth=False, headers_only=True)
             self.assertEqual(status, 401)
             with patch.object(experiments, "_file", side_effect=AssertionError("HTTP pin read disk")):
                 status, _, body = self.request("/api/experiment/baseline", method="POST", payload=original)

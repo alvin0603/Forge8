@@ -143,7 +143,8 @@ class ImportDeskTests(fixtures.DeskFixture):
         payload = self.request_for()
         for headers, auth, status in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
                 ({"Origin": "https://evil.invalid"}, True, 403)):
-            actual, _, data = self.request("/api/import-source", method="POST", payload=payload, headers=headers, auth=auth)
+            actual, _, data = self.request("/api/import-source", method="POST", payload=payload,
+                headers=headers, auth=auth, headers_only=True)
             self.assertEqual(actual, status)
             self.assertNotIn(b"impl.py", data)
         status, headers, raw = self.request("/api/import-source", method="POST", payload=payload)

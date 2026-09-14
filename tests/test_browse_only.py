@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import http.client
 import io
 import json
 import os
@@ -17,6 +16,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from forge8 import cli
 from forge8 import desk as desk_module
 from forge8 import experiments
+import test_desk as desk_fixtures
 
 
 class _BrowseFixture(unittest.TestCase):
@@ -231,19 +231,10 @@ class BrowseOnlyHTTPTests(_BrowseFixture):
         self.thread.join(3)
         self.assertFalse(self.thread.is_alive())
 
-    def request(self, route, payload=None, *, auth=True, headers=None):
-        fields = {"Authorization": "Bearer " + self.token} if auth else {}
-        if payload is not None:
-            fields.update({"Origin": self.origin, "Content-Type": "application/json"})
-        fields.update(headers or {})
-        connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
-        try:
-            connection.request("GET" if payload is None else "POST", route,
-                None if payload is None else json.dumps(payload).encode(), fields)
-            response = connection.getresponse()
-            return response.status, dict(response.getheaders()), response.read()
-        finally:
-            connection.close()
+    def request(self, route, payload=None, *, auth=True, headers=None, headers_only=False):
+        return desk_fixtures.ReadingHTTPTests.request(self, route,
+            method="GET" if payload is None else "POST", payload=payload,
+            auth=auth, headers=headers, headers_only=headers_only)
 
     def test_authenticated_static_apis_work_and_keep_private_host_origin_gates(self):
         for headers, auth, expected in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
@@ -282,8 +273,9 @@ class BrowseOnlyHTTPTests(_BrowseFixture):
         for route, payload in attempts:
             with self.subTest(route=route):
                 self.assertEqual(self.request(route, payload)[0], 400)
-        self.assertEqual(self.request("/api/jobs", self.question(), auth=False)[0], 401)
-        self.assertEqual(self.request("/api/jobs", self.question(), headers={"Origin": "https://evil.invalid"})[0], 403)
+        self.assertEqual(self.request("/api/jobs", self.question(), auth=False, headers_only=True)[0], 401)
+        self.assertEqual(self.request("/api/jobs", self.question(),
+            headers={"Origin": "https://evil.invalid"}, headers_only=True)[0], 403)
         self.assertEqual(sorted(str(path.relative_to(self.state)) for path in self.state.rglob("*")), before)
         self.assert_no_execution()
 

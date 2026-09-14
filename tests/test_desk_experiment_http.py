@@ -28,7 +28,7 @@ class ExperimentHTTPTests(fixtures.DeskFixture):
                     ({"Origin": "https://evil.invalid"}, True, 403)):
                 with self.subTest(fields=fields, auth=auth):
                     self.assertEqual(self.request("/api/experiment/run", method="POST", payload={},
-                        headers=fields, auth=auth)[0], expected)
+                        headers=fields, auth=auth, headers_only=True)[0], expected)
             run.assert_not_called()
         payload = {"file": "0", "version": self.desk.project["version"], "entry": "entry"}
         status, _, body = self.request("/api/experiment/prepare", method="POST", payload=payload)
@@ -56,9 +56,9 @@ class ExperimentHTTPTests(fixtures.DeskFixture):
         with patch.object(self.desk, "start_experiment", return_value={"id": "owned"}) as run, \
                 patch.object(self.desk, "start") as model:
             self.assertEqual(self.request("/api/experiment/run", method="POST", payload=payload)[0], 202)
-            self.assertEqual(self.request("/api/jobs", method="POST", payload=payload)[0], 400)
+            self.assertEqual(self.request("/api/jobs", method="POST", payload=payload, headers_only=True)[0], 400)
             self.assertEqual(self.request("/api/experiment/run", method="POST",
-                payload={"input_text": "x" * (36 * 1024)})[0], 400)
+                payload={"input_text": "x" * (36 * 1024)}, headers_only=True)[0], 400)
             run.assert_called_once()
             model.assert_not_called()
 

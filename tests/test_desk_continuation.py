@@ -326,9 +326,12 @@ class ContinuationHTTPTests(_ContinuationFixture):
                 patch.object(desk_module, "_run_project_cli") as project, patch.object(desk_module, "_run_locate_cli") as locate:
             for headers, auth, expected in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
                     ({"Origin": "https://evil.invalid"}, True, 403)):
-                self.assertEqual(self.request("/api/continue-question", method="POST", payload=payload, headers=headers, auth=auth)[0], expected)
-            for bad in ({**payload, "focus": []}, {**payload, "version": "stale"}, {**payload, "question": "x" * 17_000}):
+                self.assertEqual(self.request("/api/continue-question", method="POST", payload=payload,
+                    headers=headers, auth=auth, headers_only=True)[0], expected)
+            for bad in ({**payload, "focus": []}, {**payload, "version": "stale"}):
                 self.assertEqual(self.request("/api/continue-question", method="POST", payload=bad)[0], 400)
+            self.assertEqual(self.request("/api/continue-question", method="POST",
+                payload={**payload, "question": "x" * 17_000}, headers_only=True)[0], 400)
             status, headers, body = self.request("/api/continue-question", method="POST", payload=payload)
             self.assertEqual(status, 202)
             self.assertEqual(headers["Cache-Control"], "no-store")

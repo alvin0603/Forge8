@@ -698,12 +698,19 @@ class ReadingHTTPTests(DeskFixture):
         self.server.server_close()
         self.thread.join(3)
 
-    def request(self, path, *, method="GET", payload=None, headers=None, auth=True):
+    def request(self, path, *, method="GET", payload=None, headers=None, auth=True, headers_only=False):
+        if headers_only and method != "POST":
+            raise ValueError("header-only rejection fixtures require POST")
         fields = {"Authorization": "Bearer " + self.token} if auth else {}
         body = None
         if method == "POST":
             body = json.dumps(payload or {}).encode()
             fields.update({"Origin": self.origin, "Content-Type": "application/json"})
+            if headers_only:
+                # Require rejection before body reads. A late body write races
+                # HTTP/1.0 early close on Windows; never accept a reset as success.
+                fields["Content-Length"] = str(len(body))
+                body = None
         fields.update(headers or {})
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=3)
         try:
@@ -712,6 +719,20 @@ class ReadingHTTPTests(DeskFixture):
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def test_header_only_fixture_declares_body_without_sending_it(self):
+        payload = {"source": "not sent"}
+        with patch.object(http.client, "HTTPConnection") as connect:
+            with self.assertRaises(ValueError):
+                self.request("/api/context", headers_only=True)
+            connect.assert_not_called()
+            self.request("/api/context", method="POST", payload=payload, headers_only=True)
+            args = connect.return_value.request.call_args.args
+            self.assertEqual(args[:3], ("POST", "/api/context", None))
+            self.assertEqual(args[3]["Content-Length"], str(len(json.dumps(payload).encode())))
+            connect.return_value.request.assert_called_once()
+            connect.return_value.getresponse.assert_called_once()
+            connect.return_value.close.assert_called_once()
 
     def test_private_source_requires_token_correct_host_and_origin(self):
         for fields, auth, expected in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
@@ -747,7 +768,7 @@ class ReadingHTTPTests(DeskFixture):
                     ({"Origin": "https://evil.invalid"}, True, 403)):
                 with self.subTest(fields=fields):
                     self.assertEqual(self.request("/api/locate", method="POST", payload=payload,
-                        headers=fields, auth=auth)[0], expected)
+                        headers=fields, auth=auth, headers_only=True)[0], expected)
             for invalid in ({**payload, "focus": []}, {**payload, "reader": "gemma12b"},
                     {**payload, "version": "stale"}, {"question": "Where?"}):
                 self.assertEqual(self.request("/api/locate", method="POST", payload=invalid)[0], 400)
@@ -798,7 +819,7 @@ class ReadingHTTPTests(DeskFixture):
             for fields, auth, expected in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
                     ({"Origin": "https://evil.invalid"}, True, 403)):
                 self.assertEqual(self.request("/api/project-question", method="POST", payload=payload,
-                    headers=fields, auth=auth)[0], expected)
+                    headers=fields, auth=auth, headers_only=True)[0], expected)
             for invalid in ({**payload, "focus": []}, {**payload, "reader": "gemma12b"},
                     {**payload, "version": "old"}, {"question": "missing version"}):
                 self.assertEqual(self.request("/api/project-question", method="POST", payload=invalid)[0], 400)
@@ -815,9 +836,10 @@ class ReadingHTTPTests(DeskFixture):
             self.assertEqual(self.desk.status()["id"], json.loads(body)["id"])
 
     def test_mutation_requires_origin_and_json_and_arbitrary_paths_are_not_served(self):
-        for fields in ({"Origin": "null"}, {"Origin": "https://evil.invalid"}, {"Content-Type": "text/plain"}):
-            status, _, _ = self.request("/api/refresh", method="POST", headers=fields)
-            self.assertIn(status, (400, 403))
+        for fields, expected in (({"Origin": "null"}, 403),
+                ({"Origin": "https://evil.invalid"}, 403), ({"Content-Type": "text/plain"}, 400)):
+            status, _, _ = self.request("/api/refresh", method="POST", headers=fields, headers_only=True)
+            self.assertEqual(status, expected)
         status, _, _ = self.request("/api/source?file=../../private&version=" + self.desk.project["version"])
         self.assertEqual(status, 400)
         for path in ("/../../private", "/api/execute", "/.env"):

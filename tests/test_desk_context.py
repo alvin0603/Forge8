@@ -136,7 +136,8 @@ class ContextHTTPTests(fixtures.DeskFixture):
         for headers, auth, expected in (({}, False, 401), ({"Host": "evil.invalid"}, True, 403),
                 ({"Origin": "https://evil.invalid"}, True, 403)):
             with self.subTest(headers=headers, auth=auth):
-                status, _, body = self.request("/api/context", method="POST", payload=payload, headers=headers, auth=auth)
+                status, _, body = self.request("/api/context", method="POST", payload=payload,
+                    headers=headers, auth=auth, headers_only=True)
                 self.assertEqual(status, expected)
                 self.assertNotIn(b"VALUE", body)
         status, headers, body = self.request("/api/context", method="POST", payload=payload)
